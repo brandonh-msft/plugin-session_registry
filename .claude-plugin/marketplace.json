@@ -1,0 +1,39 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/marketplace.schema.json",
+  "name": "session-registry",
+  "owner": {
+    "name": "bc3tech",
+    "url": "https://github.com/bc3tech"
+  },
+  "version": "0.0.1",
+  "description": "Capture, scan, publish, and share native AI agent sessions securely.",
+  "plugins": [
+    {
+      "name": "session-registry",
+      "source": "./",
+      "displayName": "Session Registry",
+      "version": "0.0.1",
+      "description": "Capture, scan, publish, and share native AI agent sessions securely.",
+      "author": {
+        "name": "bc3tech"
+      },
+      "repository": "https://github.com/bc3tech/session-registry",
+      "homepage": "https://github.com/bc3tech/session-registry",
+      "keywords": [
+        "session",
+        "registry",
+        "publishing",
+        "security",
+        "agent"
+      ],
+      "category": "security",
+      "tags": [
+        "session",
+        "registry",
+        "publishing",
+        "security",
+        "agent"
+      ]
+    }
+  ]
+}

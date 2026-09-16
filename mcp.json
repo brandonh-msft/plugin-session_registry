@@ -1,0 +1,17 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "session-registry": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/scripts/mcp-server.mjs"
+      ],
+      "cwd": "${PLUGIN_ROOT}",
+      "env": {
+        "SESSION_REGISTRY_API_URL": "https://sessionregistry.io",
+        "SESSION_REGISTRY_TOKEN": "session-registry-public-publish-v1"
+      }
+    }
+  }
+}

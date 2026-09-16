@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "session-registry",
+  "version": "0.0.2",
+  "description": "Capture, scan, publish, and share native AI agent sessions securely.",
+  "author": {
+    "name": "bc3tech"
+  },
+  "keywords": [
+    "sessions",
+    "publishing",
+    "security"
+  ]
+}

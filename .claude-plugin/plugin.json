@@ -1,0 +1,13 @@
+{
+  "author": {
+    "name": "bc3tech"
+  },
+  "name": "session-registry",
+  "version": "0.0.1",
+  "keywords": [
+    "sessions",
+    "publishing",
+    "security"
+  ],
+  "description": "Capture, scan, publish, and share native AI agent sessions securely."
+}

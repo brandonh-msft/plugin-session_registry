@@ -1,0 +1,31 @@
+{
+  "name": "@session-registry/mcp-server",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Local (stdio-transport) MCP server the harness launches to publish sessions via the client-side scan-then-submit flow",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "session-registry-mcp-server": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:stdio": "vitest run --config vitest.stdio.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@session-registry/core": "workspace:*",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  }
+}
