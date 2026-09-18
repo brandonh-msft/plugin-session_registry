@@ -14,6 +14,11 @@ import {
 } from "../src/httpBackendClient.js";
 import type { PublishSubmission } from "../src/tools/publish.js";
 import type { ShareLinkRequest } from "../src/tools/publishAndShare.js";
+import {
+  PurgeSessionNotTombstonedError,
+  PurgeSessionRequestFailedError,
+  type PurgeSessionResult,
+} from "../src/tools/purgeSession.js";
 
 const SUBMISSION: PublishSubmission = {
   ownerGithubLogin: "octocat",
@@ -635,5 +640,97 @@ describe("createHttpBackendClient", () => {
     ).resolves.toMatchObject({
       shareUrl: "https://web.example.net/session/hs1/l1",
     });
+  });
+
+  it("lists the caller's tombstoned sessions for purge preview", async () => {
+    const fetchMock = vi.fn(async () =>
+      okResponse({
+        sessions: [
+          {
+            sessionId: "sess_1",
+            harnessSessionId: "hs1",
+            title: "Deleted session",
+            deletedAt: "2026-09-17T12:00:00.000Z",
+          },
+        ],
+      }, 200),
+    );
+    const client = createHttpBackendClient({
+      baseUrl: "https://registry.example.com",
+      getAccessToken: async () => "token-abc",
+      uploader: uploaderStub(),
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(client.listTombstonedSessions()).resolves.toEqual({
+      sessions: [
+        {
+          sessionId: "sess_1",
+          harnessSessionId: "hs1",
+          title: "Deleted session",
+          deletedAt: "2026-09-17T12:00:00.000Z",
+        },
+      ],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://registry.example.com/api/sessions/purge-preview");
+    expect(init.method).toBe("GET");
+  });
+
+  it("purges one tombstoned session and preserves blob cleanup details", async () => {
+    const expected: PurgeSessionResult = {
+      sessionId: "sess_1",
+      outcome: "purged_with_blob_cleanup_failures",
+      blobResults: [
+        {
+          pointer: { containerName: "sessions", blobKey: "blob-1" },
+          outcome: "delete_failed",
+          detail: "blob delete failed",
+        },
+      ],
+    };
+    const fetchMock = vi.fn(async () => okResponse(expected, 200));
+    const client = createHttpBackendClient({
+      baseUrl: "https://registry.example.com",
+      getAccessToken: async () => "token-abc",
+      uploader: uploaderStub(),
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(client.purgeSession("sess_1")).resolves.toEqual(expected);
+  });
+
+  it("maps the purge precondition conflict to PurgeSessionNotTombstonedError", async () => {
+    const fetchMock = vi.fn(async () =>
+      okResponse(
+        { error: "session sess_1 must be tombstoned before it can be purged" },
+        409,
+      ),
+    );
+    const client = createHttpBackendClient({
+      baseUrl: "https://registry.example.com",
+      getAccessToken: async () => "token-abc",
+      uploader: uploaderStub(),
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(client.purgeSession("sess_1")).rejects.toThrow(
+      PurgeSessionNotTombstonedError,
+    );
+  });
+
+  it("surfaces preview route failures with purge request metadata", async () => {
+    const fetchMock = vi.fn(async () => okResponse({ error: "nope" }, 500));
+    const client = createHttpBackendClient({
+      baseUrl: "https://registry.example.com",
+      getAccessToken: async () => "token-abc",
+      uploader: uploaderStub(),
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(client.listTombstonedSessions()).rejects.toThrow(
+      PurgeSessionRequestFailedError,
+    );
   });
 });

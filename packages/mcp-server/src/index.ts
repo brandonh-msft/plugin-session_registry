@@ -46,6 +46,14 @@ import {
   type BackendRestoreSessionClient,
 } from "./tools/restoreSession.js";
 import {
+  purgeSession,
+  type BackendPurgeSessionClient,
+} from "./tools/purgeSession.js";
+import {
+  purgeSessions,
+  type BackendListTombstonedSessionsClient,
+} from "./tools/purgeSessions.js";
+import {
   createHttpBackendClient,
   PublishStateUnknownError,
 } from "./httpBackendClient.js";
@@ -121,10 +129,14 @@ export interface PublishToolInput {
 
 type SessionRegistryBackendClient = BackendPublishAndShareClient &
   BackendDeleteSessionClient &
-  BackendRestoreSessionClient;
+  BackendRestoreSessionClient &
+  BackendPurgeSessionClient &
+  BackendListTombstonedSessionsClient;
 type ServerBackendClient = BackendPublishAndShareClient &
   Partial<BackendDeleteSessionClient> &
-  Partial<BackendRestoreSessionClient>;
+  Partial<BackendRestoreSessionClient> &
+  Partial<BackendPurgeSessionClient> &
+  Partial<BackendListTombstonedSessionsClient>;
 
 export function createDefaultBackendClient(
   env: NodeJS.ProcessEnv,
@@ -572,6 +584,115 @@ export function createServer(
     },
   );
 
+  server.registerTool(
+    "purge_session",
+    {
+      title: "Permanently purge one published session",
+      description:
+        "Irreversibly hard-delete one previously tombstoned published session by immutable sessionId. " +
+        "Only the owner can purge it, and only after delete_session has already tombstoned it. " +
+        "Blob cleanup is best-effort: shared blobs are preserved, and any failed blob deletes are reported without resurrecting the row.",
+      inputSchema: z.object({
+        sessionId: z.string().min(1).describe(
+          "Immutable published session id returned by publish_session or save_session.",
+        ),
+      }).strict(),
+    },
+    async (input) => {
+      const result = await purgeSession(input, {
+        backendClient: requirePurgeSessionBackendClient(backendClient),
+      });
+      const message =
+        result.outcome === "purged"
+          ? `Purged session ${result.sessionId}.`
+          : `Purged session ${result.sessionId}, but some blobs could not be deleted immediately.`;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: message,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "purge_sessions",
+    {
+      title: "Permanently purge all tombstoned published sessions",
+      description:
+        "Preview and then, within this same tool call, permanently purge all of the caller's currently tombstoned published sessions. " +
+        "This tool never accepts an explicit id list; the server computes the current tombstoned set, asks for confirmation once, and then purges only that fixed previewed set.",
+      inputSchema: z.object({}).strict(),
+    },
+    async (input, extra) => {
+      const result = await purgeSessions(input, {
+        backendClient: requirePurgeSessionsBackendClient(backendClient),
+        confirm: async (request) => {
+          if (!server.server.getClientCapabilities()?.elicitation?.form) {
+            return undefined;
+          }
+          const response = await server.server.elicitInput(
+            {
+              message: request.message,
+              requestedSchema: request.requestedSchema,
+            },
+            {
+              relatedRequestId: extra.requestId,
+              signal: extra.signal,
+              timeout: 10 * 60 * 1_000,
+            },
+          );
+          return response as {
+            action: "accept" | "decline" | "cancel";
+            content?: { confirm?: boolean };
+          };
+        },
+      });
+
+      const succeeded = result.outcomes.filter(
+        (outcome) =>
+          outcome.outcome === "purged" ||
+          outcome.outcome === "purged_with_blob_cleanup_failures",
+      ).length;
+      const partial = result.outcomes.filter(
+        (outcome) => outcome.outcome === "purged_with_blob_cleanup_failures",
+      ).length;
+      const skipped = result.outcomes.filter(
+        (outcome) => outcome.outcome === "skipped",
+      ).length;
+      const failed = result.outcomes.filter(
+        (outcome) => outcome.outcome === "failed",
+      ).length;
+      const message =
+        result.confirmation === "not_needed"
+          ? "No tombstoned sessions were available to purge."
+          : result.confirmation === "accepted"
+            ? `Processed ${result.previewCount} previewed tombstoned sessions: ${succeeded} purged, ${partial} with blob cleanup warnings, ${skipped} skipped, ${failed} failed.`
+            : result.confirmation === "unavailable"
+              ? "This client does not support in-call confirmation forms, so nothing was purged."
+              : "Purge cancelled; nothing was deleted.";
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: message,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
   server.registerPrompt(
     "prepare_full_fidelity_publish_session",
     {
@@ -615,6 +736,27 @@ function requireRestoreSessionBackendClient(
     throw new Error("restore_session backend client is not configured");
   }
   return backendClient as BackendRestoreSessionClient;
+}
+
+function requirePurgeSessionBackendClient(
+  backendClient: ServerBackendClient,
+): BackendPurgeSessionClient {
+  if (typeof backendClient.purgeSession !== "function") {
+    throw new Error("purge_session backend client is not configured");
+  }
+  return backendClient as BackendPurgeSessionClient;
+}
+
+function requirePurgeSessionsBackendClient(
+  backendClient: ServerBackendClient,
+): BackendPurgeSessionClient & BackendListTombstonedSessionsClient {
+  if (typeof backendClient.purgeSession !== "function") {
+    throw new Error("purge_sessions backend purge client is not configured");
+  }
+  if (typeof backendClient.listTombstonedSessions !== "function") {
+    throw new Error("purge_sessions backend preview client is not configured");
+  }
+  return backendClient as BackendPurgeSessionClient & BackendListTombstonedSessionsClient;
 }
 
 async function main(): Promise<void> {
