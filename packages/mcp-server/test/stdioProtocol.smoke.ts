@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -7,9 +8,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ElicitRequestFormParamsSchema, ElicitRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { NATIVE_SESSION_ARCHIVE_FORMAT, buildNativeSessionBundle, type NativeSessionArchive } from "@session-registry/core";
 import { beforeAll, describe, expect, it } from "vitest";
 
 const PREPARE_PROMPT_NAME = "prepare_full_fidelity_publish_session";
+const IMPORT_TOOL_NAME = "import_session_bundle";
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../..", import.meta.url));
 const MCP_DIST_DIRECTORY = resolve(
   REPOSITORY_ROOT,
@@ -20,6 +23,30 @@ const COMPILED_ENTRYPOINT = resolve(MCP_DIST_DIRECTORY, "index.js");
 const AUTHORITATIVE_VERIFICATION_COMMAND =
   "pnpm verify:full-fidelity-publication-contract";
 let expectedCoreChecklist: string;
+
+function importFixtureBundle(): Uint8Array {
+  const content = '{"type":"user.message","data":{"content":"stdio imported data"}}\n';
+  const sha256 = createHash("sha256").update(content).digest("hex");
+  const archive: NativeSessionArchive = {
+    format: NATIVE_SESSION_ARCHIVE_FORMAT,
+    harness: { name: "github-copilot-cli", version: "1.0.0" },
+    harnessSessionId: "stdio-import-fixture",
+    capturedAt: "2026-09-17T00:00:00.000Z",
+    sourceFormat: "fixture",
+    scope: "persisted-session-records",
+    resumable: false,
+    files: [{ path: "events.jsonl", kind: "events", recordCount: 1, content, sha256 }],
+    redactions: [],
+    capture: {
+      boundary: "observed-prefixes", entrypoint: "events.jsonl", selection: "native-id", layout: "session-directory",
+      sources: [{ path: "events.jsonl", capturedBytes: Buffer.byteLength(content), observedBytes: Buffer.byteLength(content), sha256, snapshot: "file-prefix" }],
+      history: [{ path: "events.jsonl", sessionId: "stdio-import-fixture" }],
+      diagnostics: [],
+    },
+    restoration: { status: "not-verified", reason: "No admission contract." },
+  };
+  return buildNativeSessionBundle(archive);
+}
 
 interface ProcessResult {
   readonly code: number | null;
@@ -222,6 +249,10 @@ describe("compiled MCP stdio protocol", () => {
       "the Windows startup regression requires an absolute filesystem path",
     ).toBe(true);
 
+    const importRoot = await mkdtemp(join(tmpdir(), "registry-import-stdio-"));
+    const importPath = join(importRoot, "fixture.zip");
+    await writeFile(importPath, importFixtureBundle());
+    let importPrompts = 0;
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [COMPILED_ENTRYPOINT],
@@ -238,6 +269,13 @@ describe("compiled MCP stdio protocol", () => {
     const client = new Client({
       name: "session-registry-compiled-stdio-smoke",
       version: "1.0.0",
+    }, { capabilities: { elicitation: { form: {} } } });
+    client.setRequestHandler(ElicitRequestSchema, (request) => {
+      const params = ElicitRequestFormParamsSchema.parse(request.params);
+      importPrompts++;
+      expect(params.message).not.toContain(importPath);
+      expect(params.message).not.toContain("stdio imported data");
+      return { action: "decline" };
     });
     let connected = false;
 
@@ -297,6 +335,25 @@ describe("compiled MCP stdio protocol", () => {
       expect(tools.find(({ name }) => name === "prepare_session_capture")?.description)
         .toContain("Do not ask the owner to write these fields or present a blank metadata form.");
       expect(checklist).toContain("one concise publish proposal");
+      for (const name of [IMPORT_TOOL_NAME, "read_import_slice", "close_import"]) {
+        const tool = tools.find((candidate) => candidate.name === name);
+        expect(tool?.inputSchema.additionalProperties).toBe(false);
+        expect(tool?.description).toBeTruthy();
+      }
+
+      const malformedImport = await client.callTool({
+        name: IMPORT_TOOL_NAME,
+        arguments: { bundlePath: "" },
+      });
+      expect(malformedImport.isError).toBe(true);
+      const declinedImport = await client.callTool({
+        name: IMPORT_TOOL_NAME,
+        arguments: { bundlePath: importPath },
+      });
+      const importBlock = declinedImport.content[0];
+      if (importBlock?.type !== "text") throw new Error("Expected import response");
+      expect(JSON.parse(importBlock.text)).toMatchObject({ code: "IMPORT_CONSENT_REQUIRED" });
+      expect(importPrompts).toBe(1);
 
       await expect(
         client.getPrompt({ name: "unknown-compiled-stdio-prompt" }),
@@ -326,6 +383,7 @@ describe("compiled MCP stdio protocol", () => {
       } else {
         await transport.close();
       }
+      await rm(importRoot, { recursive: true, force: true });
     }
   });
 
