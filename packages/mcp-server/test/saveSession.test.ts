@@ -136,6 +136,53 @@ describe("save-session MCP workflow", () => {
     } finally { await run.close(); }
   });
 
+  it("truncates an over-length auto-generated summary instead of hard-rejecting the save", async () => {
+    const run = await setup("github-copilot-cli", accepted);
+    try {
+      const overlongSummary = "S".repeat(650);
+      const result = await run.client.callTool({
+        name: "save_session",
+        arguments: { ...run.draft, summary: overlongSummary },
+      });
+      expect(result.isError).not.toBe(true);
+      const form = ElicitRequestFormParamsSchema.parse(run.confirmations[0]!.params);
+      const formSummaryDefault = form.requestedSchema.properties.summary?.default;
+      expect(typeof formSummaryDefault).toBe("string");
+      expect((formSummaryDefault as string).length).toBeLessThanOrEqual(500);
+      expect(formSummaryDefault).toMatch(/\.\.\.$/);
+      expect(form.message).toContain("shortened to fit the character limit");
+      expect(run.submissions[0]?.summary.length).toBeLessThanOrEqual(500);
+      expect(run.submissions[0]?.summary).toMatch(/\.\.\.$/);
+    } finally { await run.close(); }
+  });
+
+  it("truncates an over-length noninteractive summary and reports it instead of failing", async () => {
+    const run = await setup("github-copilot-cli");
+    try {
+      const overlongSummary = "T".repeat(650);
+      const result = await run.client.callTool({
+        name: "save_session",
+        arguments: { ...run.draft, interactionMode: "noninteractive", summary: overlongSummary },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(run.submissions[0]?.summary.length).toBeLessThanOrEqual(500);
+      expect(run.submissions[0]?.summary).toMatch(/\.\.\.$/);
+      expect(JSON.stringify(result)).toContain("metadataTruncated");
+    } finally { await run.close(); }
+  });
+
+  it("rejects a save_session call whose summary exceeds the wider MCP schema ceiling", async () => {
+    const run = await setup("github-copilot-cli", accepted);
+    try {
+      const result = await run.client.callTool({
+        name: "save_session",
+        arguments: { ...run.draft, summary: "U".repeat(2_000) },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).toContain("Too big");
+    } finally { await run.close(); }
+  });
+
   it("preserves explicit restricted access without putting nested audience schemas in elicitation", async () => {
     const run = await setup("github-copilot-cli", accepted);
     const audiencePolicy = { accessMode: "authenticated" as const, rules: [{ type: "specific-users" as const, githubLogins: ["reviewer"] }] };

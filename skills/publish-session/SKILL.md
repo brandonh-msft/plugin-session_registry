@@ -99,6 +99,8 @@ The MCP server must:
 - Store the original capture in an owner-only local archive (`~/.session-registry/captures`).
 - Scan the gathered artifacts for secrets before transmitting anything to the hosted registry backend, and **always** report how many were found — this reporting step is code-enforced and never skipped, narrated away, or folded silently into another step.
 
+**Dependency-path authorization (`UNSUPPORTED_DEPENDENCY` / `MISSING_DEPENDENCY`).** A native capture may reference output files (attachments, generated artifacts, resumable state) that live outside the session's own directory. Reading any such file requires the owner-authorized `dependencyPaths` (or a `dependencyMappings` entry if the file has moved). Do not guess these paths or search the filesystem speculatively. If `save_session` or `prepare_session_capture` returns `UNSUPPORTED_DEPENDENCY`/`MISSING_DEPENDENCY`, the error lists every exact absolute path it needs — copy those paths verbatim into `dependencyPaths` (or `dependencyMappings` if relocated) on the immediate retry using the same `captureId`, rather than iterating one path at a time or exploring the filesystem to rediscover them.
+
 ## Phase 4: Code-Enforced Secret Decision, Metadata Form, and Recap
 
 Once artifacts are gathered and scanned, the server drives a fixed, non-negotiable sequence in interactive mode. None of these steps can be skipped, merged, reordered, auto-approved, or inferred from the original publish request, regardless of how the agent or user phrases it:

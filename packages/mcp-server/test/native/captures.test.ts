@@ -354,6 +354,27 @@ describe("native session capture", () => {
     await expect(service.prepare(input)).rejects.toThrow("UNSUPPORTED_DEPENDENCY");
   });
 
+  it("batches every unauthorized reference into one actionable error naming their exact paths", async () => {
+    const fixture = await nativeFixture("claude-code");
+    directories.push(fixture.root);
+    const service = createNativeCaptureService(fixture.options);
+    const input = { harness: "claude-code" as const, harnessSessionId: SESSION_ID };
+    const firstOutside = join(dirname(fixture.primary), "another-session-a.jsonl");
+    const secondOutside = join(dirname(fixture.primary), "another-session-b.jsonl");
+    await writeRecords(fixture.primary, [
+      ...fixture.records,
+      { type: "user", sessionId: SESSION_ID, toolUseResult: { persistedOutputPath: firstOutside } },
+      { type: "user", sessionId: SESSION_ID, toolUseResult: { persistedOutputPath: secondOutside } },
+    ]);
+    const failure = await service.prepare(input).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain("UNSUPPORTED_DEPENDENCY");
+    expect(message).toContain("2 native output reference(s)");
+    expect(message).toContain(firstOutside);
+    expect(message).toContain(secondOutside);
+  });
+
   it("preserves native output truncation and reports embedded media for explicit owner review", async () => {
     const fixture = await nativeFixture("codex-cli");
     directories.push(fixture.root);

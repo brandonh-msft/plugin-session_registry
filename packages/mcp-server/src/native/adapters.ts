@@ -53,6 +53,20 @@ interface SourceIdentity {
   readonly format: string;
 }
 
+/** Capped so a session with many bad references still renders a short, actionable list. */
+const DEPENDENCY_PATH_LIST_LIMIT = 20;
+
+/**
+ * Renders exact absolute paths for an UNSUPPORTED_DEPENDENCY/MISSING_DEPENDENCY
+ * error so a caller can copy them verbatim into dependencyPaths on retry,
+ * instead of guessing by searching the filesystem.
+ */
+function formatDependencyPathList(paths: readonly string[]): string {
+  const shown = paths.slice(0, DEPENDENCY_PATH_LIST_LIMIT);
+  const remainder = paths.length - shown.length;
+  return shown.join(", ") + (remainder > 0 ? `, and ${remainder} more` : "");
+}
+
 async function directoryEntries(path: string): Promise<readonly string[]> {
   try {
     const entries = await readdir(path, { withFileTypes: true });
@@ -401,7 +415,14 @@ export async function captureNativeSession(
       throw new NativeCaptureError("MISSING_SUBAGENT", "A Claude child transcript referenced by toolUseResult.agentId is missing.");
     }
   }
+  // Collected across every reference instead of thrown on the first hit, so
+  // one retry can authorize every needed path at once via dependencyPaths -
+  // an agent otherwise has no signal beyond "some file, somewhere" and tends
+  // to guess by scanning the filesystem across several wasted attempts.
+  const unauthorizedReferences: string[] = [];
+  const missingReferences: string[] = [];
   for (const reference of pendingReferences) {
+    let absolute: string | undefined;
     try {
       const parts = reference.replaceAll("\\", "/").split("/");
       const referenceRoot = input.harness === "claude-code" && parts[0] === input.harnessSessionId
@@ -409,33 +430,41 @@ export async function captureNativeSession(
         : input.harness === "claude-code" && parts[0] === "tool-results"
           ? join(dirname(primary.absolutePath), input.harnessSessionId)
           : selected.root;
-      const absolute = dependencyMappings.get(reference) ??
+      const resolvedAbsolute: string = dependencyMappings.get(reference) ??
         (isAbsolute(reference)
           ? resolve(reference)
           : isForeignAbsolute(reference) ? reference : resolve(referenceRoot, reference));
-      if (dependencyMappings.has(reference) || explicitDependencies.has(absolute)) {
-        const root = dirname(absolute);
+      absolute = resolvedAbsolute;
+      if (dependencyMappings.has(reference) || explicitDependencies.has(resolvedAbsolute)) {
+        const root = dirname(resolvedAbsolute);
         if (relative(root, await realpath(root)) !== "") {
           throw new NativeCaptureError("UNSAFE_SOURCE_PATH", "An explicitly selected dependency directory is a symbolic link.");
         }
         const external = new NativeFiles(root, maxBytes);
-        const source = await external.read(basename(absolute));
+        const source = await external.read(basename(resolvedAbsolute));
         externalReaders.push(external);
         includeFile({
           ...source,
-          path: `dependencies/${createHash("sha256").update(reference).digest("hex")}/${basename(absolute)}`,
+          path: `dependencies/${createHash("sha256").update(reference).digest("hex")}/${basename(resolvedAbsolute)}`,
         }, false, reference);
+      } else if (!selected.allowedDependencies.some((directory) => isWithin(directory, resolvedAbsolute))) {
+        unauthorizedReferences.push(resolvedAbsolute);
       } else {
-        if (!selected.allowedDependencies.some((directory) => isWithin(directory, absolute))) {
-          throw new NativeCaptureError("UNSUPPORTED_DEPENDENCY",
-            "A native output reference is outside the selected session. Authorize its exact file in dependencyPaths, or map a relocated reference with dependencyMappings; no external file was read.");
-        }
-        await captureFile(absolute);
+        await captureFile(resolvedAbsolute);
       }
     } catch (error) {
       if (!isMissingFile(error)) throw error;
-      throw new NativeCaptureError("MISSING_DEPENDENCY", "A referenced native output or attachment is missing; no partial archive was prepared.");
+      missingReferences.push(absolute ?? reference);
     }
+  }
+  if (unauthorizedReferences.length > 0) {
+    throw new NativeCaptureError("UNSUPPORTED_DEPENDENCY",
+      `${unauthorizedReferences.length} native output reference(s) are outside the selected session; no external file was read. ` +
+      `Authorize these exact files in dependencyPaths (or map a relocated reference with dependencyMappings), then retry with the same captureId: ${formatDependencyPathList(unauthorizedReferences)}`);
+  }
+  if (missingReferences.length > 0) {
+    throw new NativeCaptureError("MISSING_DEPENDENCY",
+      `${missingReferences.length} referenced native output or attachment file(s) are missing; no partial archive was prepared: ${formatDependencyPathList(missingReferences)}`);
   }
   await reader.assertUnchanged();
   for (const external of externalReaders) await external.assertUnchanged();

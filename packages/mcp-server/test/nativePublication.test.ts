@@ -118,4 +118,57 @@ describe("native source through publication and viewing", () => {
       if (server.isConnected()) await server.close();
     }
   });
+
+  it("truncates an over-length summary passed directly to publish_session, not just save_session", async () => {
+    const fixture = await nativeFixture("github-copilot-cli");
+    directories.push(fixture.root);
+    await writeRecords(fixture.primary, fixture.records);
+    const metadata: Record<string, unknown> = {};
+    const backend = createHttpBackendClient({
+      baseUrl: "https://api.example.invalid",
+      getAccessToken: async () => "fixture-owner",
+      uploader: { async upload(_content, _contentType, kind) {
+        if (kind === "transcript") return { containerName: "transcripts", blobKey: "native-capture" };
+        if (kind === "resumable-bundle") return { containerName: "resumable-bundles", blobKey: "native-bundle" };
+        throw new Error("Unexpected native upload");
+      } },
+      fetch: async (_url, init) => {
+        if (typeof init?.body !== "string") throw new Error("Expected publish metadata");
+        Object.assign(metadata, JSON.parse(init.body));
+        return new Response(JSON.stringify({
+          sessionId: "published", harnessSessionId: SESSION_ID, linkId: "link",
+          shareUrl: `https://web.example.invalid/session/${SESSION_ID}/link`, idempotentReplay: false,
+        }), { status: 201 });
+      },
+    });
+    const server = createServer(backend, createNativeCaptureService(fixture.options));
+    const client = new Client({ name: "publish-session-truncation-fixture", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    try {
+      const prepared = await client.callTool({
+        name: "prepare_session_capture", arguments: { harness: "github-copilot-cli", harnessSessionId: SESSION_ID },
+      });
+      const block = prepared.content[0];
+      if (block?.type !== "text" || prepared.isError) throw new Error("Native preparation failed");
+      const capture = JSON.parse(block.text);
+      const overlongSummary = "V".repeat(650);
+      const result = await client.callTool({
+        name: "publish_session",
+        arguments: {
+          captureId: capture.captureId, resolutions: acknowledgeFixtureWarnings(capture.findings), confirmed: true,
+          title: "Native pipeline", summary: overlongSummary,
+          audiencePolicy: { accessMode: "anonymous" },
+        },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(typeof metadata.summary).toBe("string");
+      expect((metadata.summary as string).length).toBeLessThanOrEqual(500);
+      expect(metadata.summary).toMatch(/\.\.\.$/);
+    } finally {
+      await client.close();
+      if (server.isConnected()) await server.close();
+    }
+  });
 });

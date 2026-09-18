@@ -60,7 +60,7 @@ import {
 import { createSasContentUploader } from "./sasContentUploader.js";
 import { createNativeCaptureService, type NativeCaptureService } from "./native/captures.js";
 import { NativeCaptureError } from "./native/files.js";
-import { createSaveHandler } from "./tools/saveSession.js";
+import { createSaveHandler, normalizeMetadata } from "./tools/saveSession.js";
 import { createImportSessionHandlers } from "./tools/importSession.js";
 import { cleanupStaleImportWorkspaces } from "./import/workspace.js";
 import type { OwnerRedaction } from "./native/review.js";
@@ -73,6 +73,15 @@ import {
   scanNativeCapture,
   type CaptureResolution,
 } from "./native/review.js";
+
+// The registry enforces a true 120/500-character title/summary limit
+// (saveSession.ts truncates to that limit with a "..." marker and reports a
+// warning). The MCP tool schema below accepts a wider ceiling so a
+// slightly-over auto-generated draft is truncated and corrected in code
+// instead of hard-failing at the protocol layer with a raw Zod error before
+// any of our own, more actionable handling can run.
+const TITLE_SCHEMA_MAX_LENGTH = 400;
+const SUMMARY_SCHEMA_MAX_LENGTH = 1_500;
 
 const sourceSelectionShape = {
   harness: z.enum(NATIVE_HARNESSES),
@@ -190,9 +199,13 @@ export function createPublishHandler(
       // Stages the exact bytes that will be uploaded next to the original
       // capture. A retry of this same confirmed request re-sends that staged
       // file rather than re-capturing and re-redacting the session.
+      // The tool schema below accepts a wider ceiling than the registry's
+      // true 120/500-character limit, so an overlong title/summary is
+      // truncated here (never hard-rejected) the same way save_session does.
+      const { title, summary } = normalizeMetadata({ title: input.title, summary: input.summary });
       const capture = await captures.approveForPublish(input.captureId, idempotencyKey, {
         resolutions: input.resolutions,
-        metadata: { title: input.title, summary: input.summary },
+        metadata: { title, summary },
         ...(input.ownerRedactions === undefined ? {} : { ownerRedactions: input.ownerRedactions }),
       });
       const result = await publishAndShareSession(
@@ -461,8 +474,8 @@ export function createServer(
           "Required runtime context: noninteractive ONLY when you truly cannot communicate with the user at all, i.e. a flag-invoked headless process (Copilot -p/--prompt, Claude --print, Codex exec) with no further chat turn possible. Otherwise ALWAYS interactive, including every slash command or chat message in a live session, no matter how terse or explicit the wording. The user's explicit publish request authorizes prompt-specified values or defaults without UI ONLY in genuine noninteractive runs; cancellations never authorize headless retries, and interactive mode always requires the owner's explicit confirmation of the shown proposal before upload.",
         ),
         captureId: z.string().regex(/^[a-f0-9]{64}$/).optional().describe("A resume hint from a prior save/review response; session artifacts are always re-gathered regardless, and a stale or mismatched hint is rejected rather than silently reused."),
-        title: z.string().min(1).max(120).describe("YOU auto-generate the session title; the server prefills it for owner confirmation/edits."),
-        summary: z.string().min(1).max(500).describe("YOU auto-generate the whole-session task/outcome/decisions summary from approved content, not a placeholder or request for owner text."),
+        title: z.string().min(1).max(TITLE_SCHEMA_MAX_LENGTH).describe("YOU auto-generate the session title; the server prefills it for owner confirmation/edits. Longer than 120 characters is truncated automatically to fit; no need to count characters yourself."),
+        summary: z.string().min(1).max(SUMMARY_SCHEMA_MAX_LENGTH).describe("YOU auto-generate the whole-session task/outcome/decisions summary from approved content, not a placeholder or request for owner text. Longer than 500 characters is truncated automatically to fit; no need to count characters yourself."),
         audiencePolicy: audiencePolicySchema,
         expiresAt: z.string().datetime().nullable().optional().describe("Omit for 14 days; null explicitly means no expiration. Preserve a user-specified value."),
         resolutions: resolutionsSchema.optional().describe("Only prior explicit owner security decisions for detected secrets. Native warnings are confirmed in the interactive form or covered by the headless publish request."),
@@ -551,11 +564,11 @@ export function createServer(
         ownerRedactions: ownerRedactionsSchema.optional().describe(
           "Exact owner-requested replacements confirmed for this capture. These are independent of scanner findings and are applied everywhere in scannable native source content and publication metadata.",
         ),
-        title: z.string().min(1).max(120).describe(
-          "Auto-generate a specific session title, then obtain owner confirmation or edits. Do not ask the owner to author a title unless they choose to replace the draft.",
+        title: z.string().min(1).max(TITLE_SCHEMA_MAX_LENGTH).describe(
+          "Auto-generate a specific session title, then obtain owner confirmation or edits. Do not ask the owner to author a title unless they choose to replace the draft. Longer than 120 characters is truncated automatically to fit.",
         ),
-        summary: z.string().min(1).max(500).describe(
-          "Auto-generate a concise account of the whole session's task, outcome, and notable decisions from approved content, then obtain owner confirmation or edits. This metadata is not the full-fidelity transcript.",
+        summary: z.string().min(1).max(SUMMARY_SCHEMA_MAX_LENGTH).describe(
+          "Auto-generate a concise account of the whole session's task, outcome, and notable decisions from approved content, then obtain owner confirmation or edits. This metadata is not the full-fidelity transcript. Longer than 500 characters is truncated automatically to fit.",
         ),
         confirmed: z.literal(true).describe(
           "True only after the owner has confirmed the captured source, finding resolutions, title, summary, audience, and expiration, and acknowledged that automated detection is incomplete.",

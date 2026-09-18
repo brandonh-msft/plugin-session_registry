@@ -39,10 +39,36 @@ function response(value: object, isError = false): CallToolResult {
   return { ...(isError ? { isError: true } : {}), content: [{ type: "text", text: JSON.stringify(value) }] };
 }
 
-function metadata(value: { title: string; summary: string }): void {
-  if (!value.title.trim() || value.title.length > 120 || !value.summary.trim() || value.summary.length > 500) {
-    throw new NativeCaptureError("INVALID_METADATA", "Generate a nonblank title of at most 120 characters and summary of at most 500 characters.");
+/** The registry's true, enforced title/summary limits (independent of the wider MCP schema ceiling). */
+const TITLE_MAX_LENGTH = 120;
+const SUMMARY_MAX_LENGTH = 500;
+const TRUNCATION_MARKER = "...";
+
+function assertNonBlankMetadata(value: { title: string; summary: string }): void {
+  if (!value.title.trim() || !value.summary.trim()) {
+    throw new NativeCaptureError("INVALID_METADATA", "Generate a nonblank title and summary.");
   }
+}
+
+function truncateToLimit(value: string, maxLength: number): { readonly text: string; readonly truncated: boolean } {
+  if (value.length <= maxLength) return { text: value, truncated: false };
+  const text = value.slice(0, Math.max(0, maxLength - TRUNCATION_MARKER.length)).trimEnd() + TRUNCATION_MARKER;
+  return { text, truncated: true };
+}
+
+/**
+ * Validates nonblank title/summary, then silently truncates an overlong
+ * value to the registry's true 120/500 character limit (with a "..."
+ * marker) rather than hard-rejecting the whole save. The MCP tool schema
+ * accepts a wider ceiling than this so a slightly-over auto-generated draft
+ * lands here to be corrected instead of bouncing the agent with a raw
+ * protocol validation error before this code ever runs.
+ */
+export function normalizeMetadata(value: { title: string; summary: string }): { title: string; summary: string; truncated: boolean } {
+  assertNonBlankMetadata(value);
+  const title = truncateToLimit(value.title.trim(), TITLE_MAX_LENGTH);
+  const summary = truncateToLimit(value.summary.trim(), SUMMARY_MAX_LENGTH);
+  return { title: title.text, summary: summary.text, truncated: title.truncated || summary.truncated };
 }
 
 function expirationText(value: string | null | undefined): string {
@@ -205,7 +231,7 @@ function customReplacementForm(
  */
 function metadataForm(
   input: { captureId: string; harnessSessionId: string; title: string; summary: string;
-    audiencePolicy: AudiencePolicy; expiresAt?: string | null; ownerRedactions: readonly OwnerRedaction[] },
+    audiencePolicy: AudiencePolicy; expiresAt?: string | null; ownerRedactions: readonly OwnerRedaction[]; truncated?: boolean },
 ): ElicitRequestFormParams {
   const access = input.audiencePolicy.accessMode === "anonymous"
     ? "Anyone (anonymous)" : `Restricted: ${JSON.stringify(input.audiencePolicy.rules)}`;
@@ -217,6 +243,7 @@ function metadataForm(
       `Drafted summary: ${input.summary}`,
       `Drafted access: ${access}`,
       `Drafted expiration: ${input.expiresAt === undefined ? "14 days (default)" : input.expiresAt === null ? "No expiration" : input.expiresAt}`,
+      ...(input.truncated ? ["Note: the auto-generated title or summary was shortened to fit the character limit."] : []),
       "Fill in or edit every field once. A separate recap will ask you to confirm before anything is uploaded.",
     ].join("\n\n"),
     // MCP forms require primitive properties, unlike the nested tool schema.
@@ -260,7 +287,7 @@ function recapForm(
   input: {
     captureId: string; harnessSessionId: string; title: string; summary: string;
     audiencePolicy: AudiencePolicy; expiresAt?: string | null; ownerRedactions: readonly OwnerRedaction[];
-    secretDecision: SecretDecision | undefined; textFindingCount: number; requiresWarning: boolean;
+    secretDecision: SecretDecision | undefined; textFindingCount: number; requiresWarning: boolean; truncated?: boolean;
   },
 ): ElicitRequestFormParams {
   const access = input.audiencePolicy.accessMode === "anonymous"
@@ -276,6 +303,7 @@ function recapForm(
       `Expiration: ${input.expiresAt === undefined ? "14 days (default)" : input.expiresAt === null ? "No expiration" : input.expiresAt}`,
       `Additional redactions: ${input.ownerRedactions.length === 0 ? "none" : ownerRedactionsText(input.ownerRedactions)}`,
       ...(input.requiresWarning ? [NATIVE_SESSION_BUNDLE_WARNING] : []),
+      ...(input.truncated ? ["Note: the title or summary above was shortened to fit the character limit."] : []),
       "Automated security detection is incomplete. You remain responsible for shared content.",
     ].join("\n\n"),
     requestedSchema: {
@@ -353,8 +381,9 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
   return async (input: SaveSessionInput): Promise<CallToolResult> => {
     let captureId: string | undefined;
     let reviewPath: string | undefined;
+    let metadataTruncated = false;
     try {
-      metadata(input);
+      assertNonBlankMetadata(input);
       // Step 0: gathering session artifacts is never conditional on a
       // caller-supplied captureId. A fresh save always re-gathers; a
       // caller-supplied captureId is only accepted as a resume hint when it
@@ -417,17 +446,21 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
         resolutions = [...resolutions.filter((resolution) => rebasedIds.has(resolution.findingId)), ...reviewed.metadataResolutions];
       }
       candidate = { title: reviewed.title, summary: reviewed.summary };
-      metadata(candidate);
+      {
+        const normalized = normalizeMetadata(candidate);
+        candidate = { title: normalized.title, summary: normalized.summary };
+        metadataTruncated = metadataTruncated || normalized.truncated;
+      }
 
       let requiresWarning = manualFindings.length > 0;
 
       // Step 4: the one-shot metadata form, filled out exactly once.
       if (interactive) {
-        const formRequest = metadataForm({ captureId, harnessSessionId: archive.harnessSessionId, ...candidate, audiencePolicy, expiresAt, ownerRedactions });
+        const formRequest = metadataForm({ captureId, harnessSessionId: archive.harnessSessionId, ...candidate, audiencePolicy, expiresAt, ownerRedactions, truncated: metadataTruncated });
         const answer = await deps.confirm(formRequest);
         if (answer === undefined) {
           return response({
-            status: "confirmation-required", stage: "metadata", captureId, reviewPath,
+            status: "confirmation-required", stage: "metadata", captureId, reviewPath, metadataTruncated,
             proposal: { captureId, ...candidate, audiencePolicy, ...(expiresAt === undefined ? {} : { expiresAt }) },
             confirmation: formRequest, findings: manualFindings, secretDecision,
             instructions: "No upload occurred. Show this filled-in proposal and collect the title, summary, audience, expiration, and additional redactions in plain text or the supplied primitive form, then call save_session again with this exact captureId and the same resolutions. Do not ask for the native ID, create a blank metadata form, or prepare another capture.",
@@ -445,8 +478,9 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
         const editedExpiration = content.expiration === expirationText(expiresAt) ? expiresAt : parseExpiration(content.expiration);
         const editedOwnerRedactions = content.additionalRedactions === ownerRedactionsText(ownerRedactions)
           ? ownerRedactions : parseOwnerRedactions(content.additionalRedactions);
-        metadata(edited);
-        candidate = edited;
+        const normalizedEdited = normalizeMetadata(edited);
+        candidate = { title: normalizedEdited.title, summary: normalizedEdited.summary };
+        metadataTruncated = metadataTruncated || normalizedEdited.truncated;
         audiencePolicy = editedAudience;
         expiresAt = editedExpiration;
         ownerRedactions = editedOwnerRedactions;
@@ -501,7 +535,11 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
           resolutions = [...resolutions.filter((resolution) => rebasedIds.has(resolution.findingId)), ...reviewed.metadataResolutions];
         }
         candidate = { title: reviewed.title, summary: reviewed.summary };
-        metadata(candidate);
+        {
+          const normalized = normalizeMetadata(candidate);
+          candidate = { title: normalized.title, summary: normalized.summary };
+          metadataTruncated = metadataTruncated || normalized.truncated;
+        }
       }
 
       const proposal = {
@@ -514,12 +552,12 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
       if (interactive) {
         const recapRequest = recapForm({
           captureId, harnessSessionId: archive.harnessSessionId, ...candidate, audiencePolicy, expiresAt, ownerRedactions,
-          secretDecision, textFindingCount: textFindings.length, requiresWarning,
+          secretDecision, textFindingCount: textFindings.length, requiresWarning, truncated: metadataTruncated,
         });
         const recapAnswer = await deps.confirm(recapRequest);
         if (recapAnswer === undefined) {
           return response({
-            status: "confirmation-required", stage: "recap", captureId, proposal, confirmation: recapRequest,
+            status: "confirmation-required", stage: "recap", captureId, proposal, confirmation: recapRequest, metadataTruncated,
             findings: manualFindings, secretDecision,
             instructions: "No upload occurred. Present this exact non-editable recap after the metadata form and collect a single yes/no confirmation, then call save_session again with this exact captureId and the same resolutions.",
           });
@@ -547,6 +585,12 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
           interactionMode: "noninteractive",
           warning: NATIVE_SESSION_BUNDLE_WARNING,
           disclaimer: "Automated security detection is incomplete. The owner remains responsible for shared content.",
+          ...(metadataTruncated ? { metadataTruncated: true, metadataNote: "The auto-generated title or summary was shortened to fit the character limit." } : {}),
+        }) }] };
+      }
+      if (metadataTruncated) {
+        return { ...result, content: [...result.content, { type: "text", text: JSON.stringify({
+          metadataTruncated: true, metadataNote: "The auto-generated title or summary was shortened to fit the character limit.",
         }) }] };
       }
       return result;
