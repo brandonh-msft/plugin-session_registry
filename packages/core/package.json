@@ -2,7 +2,7 @@
   "name": "@session-registry/core",
   "private": true,
   "version": "0.0.0",
-  "description": "Shared data model, DB schema, and storage abstractions for the Secure Agent Session Registry",
+  "description": "Shared session capture, scanning, archive, and publication-contract surface for the plugin and the registry apps",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,11 +12,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@azure/identity": "^4.13.2",
-    "@azure/storage-blob": "^12.33.0"
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "@types/yauzl": "^3.4.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
   }

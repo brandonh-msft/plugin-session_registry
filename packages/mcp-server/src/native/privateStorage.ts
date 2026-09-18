@@ -1,7 +1,10 @@
-import { chmod, lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import { mkdir, readdir, realpath, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { parse, relative, resolve } from "node:path";
 import { NativeCaptureError } from "./errors.js";
+import { protectPrivatePath, writePrivateFileExclusive } from "./privatePaths.js";
+
+export { protectPrivatePath } from "./privatePaths.js";
 
 /**
  * The capture directory holds exactly two kinds of file: the immutable
@@ -10,23 +13,6 @@ import { NativeCaptureError } from "./errors.js";
  * means the directory is shared with unrelated data and is not safe to use.
  */
 const PRIVATE_CAPTURE_FILE = /^[a-f0-9]{64}(\.approved)?\.json$/;
-
-/**
- * Captures live under the caller's own profile, which the operating system
- * already keeps private to that account. POSIX mode bits are free to set, so
- * they are applied directly; on Windows the profile's own ACLs are inherited.
- */
-export async function protectPrivatePath(path: string, directory = false): Promise<void> {
-  const stats = await lstat(path);
-  if (stats.isSymbolicLink() || (directory ? !stats.isDirectory() : !stats.isFile())) {
-    throw new NativeCaptureError("UNSAFE_CAPTURE_STORAGE", "Private capture storage must not use symbolic links or special files.");
-  }
-  if (process.platform === "win32") return;
-  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) {
-    throw new NativeCaptureError("UNSAFE_CAPTURE_STORAGE", "The private capture path belongs to a different owner.");
-  }
-  await chmod(path, directory ? 0o700 : 0o600);
-}
 
 export async function ensurePrivateCaptureDirectory(path: string): Promise<void> {
   const directory = resolve(path);
@@ -46,21 +32,7 @@ export async function ensurePrivateCaptureDirectory(path: string): Promise<void>
 export async function writePrivateCapture(path: string, content: string): Promise<void> {
   // Exclusive creation refuses an existing file or a symlink at that name, so
   // captures stay immutable and the write cannot be redirected elsewhere.
-  const handle = await open(path, "wx", 0o600);
-  let complete = false;
-  try {
-    await handle.writeFile(content, "utf8");
-    complete = true;
-  } finally {
-    await handle.close();
-    if (!complete) {
-      try {
-        await unlink(path);
-      } catch (error) {
-        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-      }
-    }
-  }
+  await writePrivateFileExclusive(path, content, 0o600);
 }
 
 /**
