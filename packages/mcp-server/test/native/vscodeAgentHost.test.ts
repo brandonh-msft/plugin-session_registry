@@ -742,7 +742,10 @@ describe("VS Code SDK Agent Host native capture", () => {
     await expect(item.capture()).rejects.toMatchObject({ code: "UNSUPPORTED_SOURCE" });
   });
 
-  it("accepts valid differently-cased paths for user-data and SDK roots without treating them as symlinks", async () => {
+  // The capture only compares roots case-insensitively on Windows, so this
+  // guarantee is specific to case-insensitive hosts. On a case-sensitive
+  // filesystem an upper-cased root is a genuinely different, missing path.
+  it.runIf(process.platform === "win32")("accepts valid differently-cased paths for user-data and SDK roots without treating them as symlinks", async () => {
     const item = await fixture();
     const sourceWithUpperDrive = {
       ...item.source,

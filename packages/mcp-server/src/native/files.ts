@@ -42,6 +42,17 @@ export function isWithin(root: string, path: string): boolean {
   return part === "" || (!isAbsolute(part) && part !== ".." && !part.startsWith(`..${sep}`));
 }
 
+/**
+ * Recorded references are replayed on hosts other than the one that produced
+ * them, where `isAbsolute` only recognizes the running platform's roots. A
+ * Windows drive or UNC reference read on POSIX would otherwise look relative
+ * and resolve inside the selected session, so a foreign absolute path must
+ * stay absolute and remain subject to explicit owner authorization.
+ */
+export function isForeignAbsolute(path: string): boolean {
+  return /^(?:[a-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/i.test(path);
+}
+
 export function isMissingFile(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
