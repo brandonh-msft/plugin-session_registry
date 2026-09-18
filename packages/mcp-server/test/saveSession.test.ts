@@ -24,21 +24,17 @@ afterEach(async () => {
 function accepted(request: ElicitRequest): ElicitResult {
   const params = ElicitRequestFormParamsSchema.parse(request.params);
   const properties = params.requestedSchema.properties;
-  if (!("title" in properties)) {
-    return {
-      action: "accept",
-      content: {
-        additionalRedactions: "default" in properties.additionalRedactions! ? properties.additionalRedactions.default : "",
-        confirmAdditionalRedactions: true,
-      },
-    };
+  if ("decision" in properties) return { action: "accept", content: { decision: "redact-all" } };
+  if ("redact" in properties) return { action: "accept", content: { redact: true } };
+  if ("confirmPublish" in properties && !("title" in properties)) {
+    return { action: "accept", content: { confirmPublish: true } };
   }
   return { action: "accept", content: {
     title: "default" in properties.title! ? properties.title.default : "",
     summary: "default" in properties.summary! ? properties.summary.default : "",
     audience: "default" in properties.audience! ? properties.audience.default : "",
     expiration: "default" in properties.expiration! ? properties.expiration.default : "",
-    confirmPublish: true, acknowledgeWarning: true,
+    additionalRedactions: "default" in properties.additionalRedactions! ? properties.additionalRedactions.default : "",
   } };
 }
 
@@ -101,7 +97,7 @@ describe("save-session MCP workflow", () => {
         },
       });
       expect(result.isError).not.toBe(true);
-      expect(run.confirmations).toHaveLength(1);
+      expect(run.confirmations).toHaveLength(2);
       expect(run.submissions[0]?.harnessSessionId).toBe(SESSION_ID);
       const native = parseNativeSessionArchive(run.submissions[0]!.transcript);
       expect(native?.files[0]?.content).toBe(records.map((record) => JSON.stringify(record)).join("\n") + "\n");
@@ -114,7 +110,10 @@ describe("save-session MCP workflow", () => {
       const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
       expect(result.isError).not.toBe(true);
       expect(result.content[0]).toMatchObject({ text: expect.stringContaining(`https://example.invalid/session/${SESSION_ID}/link`) });
-      expect(run.confirmations).toHaveLength(1);
+      // The metadata form (once) and the recap-and-confirm form (once); no
+      // scanner findings exist in this fixture, so the secret-decision gate
+      // never runs.
+      expect(run.confirmations).toHaveLength(2);
       const form = ElicitRequestFormParamsSchema.parse(run.confirmations[0]!.params);
       expect(form.message).toContain("Anyone (anonymous)");
       expect(form.message).toContain("14 days (default)");
@@ -123,11 +122,14 @@ describe("save-session MCP workflow", () => {
       expect(form.requestedSchema.properties.audience).toMatchObject({ type: "string", default: "anyone" });
       expect(form.requestedSchema.properties.expiration).toMatchObject({ type: "string", default: "14 days" });
       expect(Object.keys(form.requestedSchema.properties)).toEqual([
-        "title", "summary", "audience", "expiration", "confirmPublish", "acknowledgeWarning",
+        "title", "summary", "audience", "expiration", "additionalRedactions",
       ]);
       expect(form.requestedSchema.required).toEqual([
-        "title", "summary", "audience", "expiration", "confirmPublish", "acknowledgeWarning",
+        "title", "summary", "audience", "expiration", "additionalRedactions",
       ]);
+      const recap = ElicitRequestFormParamsSchema.parse(run.confirmations[1]!.params);
+      expect(Object.keys(recap.requestedSchema.properties)).toEqual(["confirmPublish"]);
+      expect(recap.requestedSchema.required).toEqual(["confirmPublish"]);
       expect(run.audiences).toEqual([{ accessMode: "anonymous" }]);
       expect(run.submissions[0]).toMatchObject({ title: run.draft.title, summary: run.draft.summary, harnessSessionId: SESSION_ID });
       expect(parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.recordCount).toBe(run.fixture.records.length);
@@ -159,10 +161,11 @@ describe("save-session MCP workflow", () => {
     } finally { await run.close(); }
   });
 
-  it.each(["cancel", "decline", "no-warning", "no-confirm"] as const)("does not upload after %s", async (action) => {
+  it.each(["cancel", "decline", "no-confirm"] as const)("does not upload after %s", async (action) => {
     const run = await setup("github-copilot-cli", (request) => action === "cancel" || action === "decline"
       ? { action } : { action: "accept", content: { ...accepted(request).content,
-        ...(action === "no-warning" ? { acknowledgeWarning: false } : { confirmPublish: false }) } });
+        ...("confirmPublish" in ElicitRequestFormParamsSchema.parse(request.params).requestedSchema.properties
+          ? { confirmPublish: false } : {}) } });
     try {
       await run.client.callTool({ name: "save_session", arguments: run.draft });
       expect(run.submissions).toEqual([]);
@@ -229,8 +232,9 @@ describe("save-session MCP workflow", () => {
   it("asks for and applies owner redactions after scanner findings are accepted", async () => {
     let calls = 0;
     const run = await setup("github-copilot-cli", (request) => {
+      calls++;
       const answer = accepted(request);
-      if (++calls === 2) {
+      if (calls === 2) {
         return { ...answer, content: {
           ...answer.content,
           additionalRedactions: "private-handle -> [PRIVATE]",
@@ -243,28 +247,15 @@ describe("save-session MCP workflow", () => {
       type: "assistant.message", data: { content: `Do not publish private-handle or ${token}.` },
     }) + "\n");
     try {
-      const reviewRequired = await run.client.callTool({ name: "save_session", arguments: run.draft });
-      const reviewBlock = reviewRequired.content[0];
-      if (reviewBlock?.type !== "text") throw new Error("Expected scanner findings");
-      const review = JSON.parse(reviewBlock.text);
-      expect(review.status).toBe("review-required");
-      expect(run.confirmations).toHaveLength(0);
-      const result = await run.client.callTool({
-        name: "save_session",
-        arguments: {
-          ...run.draft,
-          captureId: review.captureId,
-          resolutions: review.findings.map((finding: { id: string }) => ({
-            findingId: finding.id,
-            action: { kind: "accept-redaction" },
-          })),
-        },
-      });
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
       expect(result.isError).not.toBe(true);
-      expect(run.confirmations).toHaveLength(2);
-      const additionalRedactionForm = ElicitRequestFormParamsSchema.parse(run.confirmations[1]!.params);
-      expect(additionalRedactionForm.message).toContain("Anything else you'd like redacted that the scanner didn't flag?");
+      // Secret-decision gate (redact-all), the one-shot metadata form (with
+      // the additional redaction typed in), and the final recap-confirm.
+      expect(run.confirmations).toHaveLength(3);
+      const decisionForm = ElicitRequestFormParamsSchema.parse(run.confirmations[0]!.params);
+      expect(decisionForm.message).toContain("The scanner found 1 likely secret");
       expect(parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.content).toContain("[PRIVATE]");
+      expect(parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.content).toContain("[REDACTED]");
       expect(parseNativeSessionArchive(run.submissions[0]!.transcript)?.redactions
         .some((redaction) => redaction.category === "owner-requested")).toBe(true);
       const receipt = result.content[1];
@@ -283,8 +274,9 @@ describe("save-session MCP workflow", () => {
   it("parses multiple plain-text redaction lines without requiring JSON", async () => {
     let calls = 0;
     const run = await setup("github-copilot-cli", (request) => {
+      calls++;
       const answer = accepted(request);
-      if (++calls === 2) {
+      if (calls === 2) {
         return { ...answer, content: {
           ...answer.content,
           additionalRedactions: "\nalpha-secret\nbeta-name -> [BETA]\n\n  gamma-token  \n",
@@ -297,23 +289,9 @@ describe("save-session MCP workflow", () => {
       type: "assistant.message", data: { content: `alpha-secret, beta-name, gamma-token, and ${token} must all disappear.` },
     }) + "\n");
     try {
-      const reviewRequired = await run.client.callTool({ name: "save_session", arguments: run.draft });
-      const reviewBlock = reviewRequired.content[0];
-      if (reviewBlock?.type !== "text") throw new Error("Expected scanner findings");
-      const review = JSON.parse(reviewBlock.text);
-      const result = await run.client.callTool({
-        name: "save_session",
-        arguments: {
-          ...run.draft,
-          captureId: review.captureId,
-          resolutions: review.findings.map((finding: { id: string }) => ({
-            findingId: finding.id,
-            action: { kind: "accept-redaction" },
-          })),
-        },
-      });
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
       expect(result.isError).not.toBe(true);
-      expect(run.confirmations).toHaveLength(2);
+      expect(run.confirmations).toHaveLength(3);
       const content = parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.content;
       expect(content).toContain("[REDACTED]");
       expect(content).toContain("[BETA]");
@@ -347,7 +325,7 @@ describe("save-session MCP workflow", () => {
       const before = Date.now();
       const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
       expect(result.isError).not.toBe(true);
-      expect(run.confirmations).toHaveLength(1);
+      expect(run.confirmations).toHaveLength(2);
       expect(run.audiences).toEqual([{ accessMode: "authenticated", rules: [
         { type: "specific-users", githubLogins: ["reviewer"] },
         { type: "organization", githubOrg: "example" },
@@ -378,7 +356,7 @@ describe("save-session MCP workflow", () => {
     try {
       const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
       expect(result.isError).not.toBe(true);
-      expect(run.confirmations).toHaveLength(1);
+      expect(run.confirmations).toHaveLength(2);
       expect(run.audiences).toEqual([{ accessMode: "authenticated", rules: [
         { type: "organization", githubOrg: "example" },
       ] }]);
@@ -386,23 +364,23 @@ describe("save-session MCP workflow", () => {
     } finally { await run.close(); }
   });
 
-  it("retains edited settings when the owner has not yet checked publication confirmation", async () => {
-    let calls = 0;
-    const run = await setup("github-copilot-cli", (request) => ({ action: "accept", content: {
-      ...accepted(request).content, confirmPublish: false,
-      ...(++calls === 1 ? { title: "Edited title", audience: "users:reviewer", expiration: "never" } : {}),
-    } }));
+  it("cancels cleanly when the owner declines the recap after editing metadata", async () => {
+    const run = await setup("github-copilot-cli", (request) => {
+      const params = ElicitRequestFormParamsSchema.parse(request.params);
+      if ("confirmPublish" in params.requestedSchema.properties) {
+        return { action: "accept", content: { confirmPublish: false } };
+      }
+      return { action: "accept", content: { ...accepted(request).content, title: "Edited title", audience: "users:reviewer", expiration: "never" } };
+    });
     try {
       const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
       const block = result.content[0];
-      if (block?.type !== "text") throw new Error("Expected reviewed proposal");
-      expect(JSON.parse(block.text)).toMatchObject({
-        status: "confirmation-required", proposal: {
-          title: "Edited title", audiencePolicy: { accessMode: "authenticated", rules: [{ type: "specific-users", githubLogins: ["reviewer"] }] },
-          expiresAt: null,
-        },
-      });
-      expect(run.confirmations).toHaveLength(1);
+      if (block?.type !== "text") throw new Error("Expected a cancellation notice");
+      // A working confirm handler that actively declines the recap is a clean
+      // cancel, not a confirmation-required round trip: only a client that
+      // cannot answer at all (no elicitation capability) gets that.
+      expect(JSON.parse(block.text)).toMatchObject({ status: "cancelled" });
+      expect(run.confirmations).toHaveLength(2);
       expect(run.submissions).toEqual([]);
     } finally { await run.close(); }
   });
@@ -412,13 +390,15 @@ describe("save-session MCP workflow", () => {
     const run = await setup("github-copilot-cli", (request) => {
       const answer = accepted(request);
       if (!first) return answer;
+      const params = ElicitRequestFormParamsSchema.parse(request.params);
+      if (!("title" in params.requestedSchema.properties)) return answer;
       first = false;
       return { action: "accept", content: { ...answer.content, title: "Owner-edited title" } };
     });
     try {
       const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
       expect(result.isError).not.toBe(true);
-      expect(run.confirmations).toHaveLength(1);
+      expect(run.confirmations).toHaveLength(2);
       expect(run.submissions[0]?.title).toBe("Owner-edited title");
     } finally { await run.close(); }
   });
@@ -455,7 +435,7 @@ describe("save-session MCP workflow", () => {
         })),
       } });
       expect(result.isError).not.toBe(true);
-      expect(run.confirmations).toHaveLength(1);
+      expect(run.confirmations).toHaveLength(2);
       expect(run.submissions).toHaveLength(1);
       expect(run.submissions[0]?.summary).toBe(`Remove [REDACTED]; retain fixture value ${secondToken}.`);
       expect(JSON.stringify(run.submissions)).not.toContain(firstToken);
@@ -468,11 +448,15 @@ describe("save-session MCP workflow", () => {
     await appendFile(run.fixture.primary, JSON.stringify({ type: "tool.execution_complete", data: { output: token } }) + "\n");
     try {
       const request = { ...run.draft, title: `Token ${token}` };
+      // The source-embedded token is auto-resolved by the secret-decision
+      // gate on this first call (accepted() answers "redact-all"); only the
+      // title-embedded metadata finding survives to require a fresh captureId.
       const first = await run.client.callTool({ name: "save_session", arguments: request });
       const block = first.content[0];
-      if (block?.type !== "text") throw new Error("Expected source and metadata findings");
+      if (block?.type !== "text") throw new Error("Expected the surviving metadata finding");
       const pending = JSON.parse(block.text);
-      expect(pending.findings).toHaveLength(2);
+      expect(pending.status).toBe("review-required");
+      expect(pending.findings).toHaveLength(1);
       const result = await run.client.callTool({ name: "save_session", arguments: {
         ...request, captureId: pending.captureId,
         resolutions: pending.findings.map((finding: { id: string }) => ({ findingId: finding.id, action: { kind: "accept-redaction" } })),
@@ -486,12 +470,12 @@ describe("save-session MCP workflow", () => {
   });
 
   it("drops metadata-only resolutions when the owner edits away the resolved finding", async () => {
-    let calls = 0;
     const run = await setup("github-copilot-cli", (request) => {
-      calls++;
-      return calls === 1
-        ? { action: "accept", content: { ...accepted(request).content, title: "Clean owner-edited title" } }
-        : accepted(request);
+      const params = ElicitRequestFormParamsSchema.parse(request.params);
+      if ("title" in params.requestedSchema.properties) {
+        return { action: "accept", content: { ...accepted(request).content, title: "Clean owner-edited title" } };
+      }
+      return accepted(request);
     });
     try {
       const request = { ...run.draft, title: `Fixture ghp_${"w".repeat(36)}` };
@@ -504,12 +488,12 @@ describe("save-session MCP workflow", () => {
         resolutions: [{ findingId: pending.findings[0].id, action: { kind: "false-positive" } }],
       } });
       expect(result.isError).not.toBe(true);
-      expect(run.confirmations).toHaveLength(1);
+      expect(run.confirmations).toHaveLength(2);
       expect(run.submissions[0]?.title).toBe("Clean owner-edited title");
     } finally { await run.close(); }
   });
 
-  it("keeps a filled-in proposal and captureId when the host lacks form support", async () => {
+  it("rejects a stale captureId once the underlying source has changed instead of reusing it", async () => {
     const run = await setup("github-copilot-cli");
     try {
       const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
@@ -522,7 +506,8 @@ describe("save-session MCP workflow", () => {
       ElicitRequestFormParamsSchema.parse(pending.confirmation);
       await appendFile(run.fixture.primary, '{"type":"session.info","data":{"message":"later"}}\n');
       const retry = await run.client.callTool({ name: "save_session", arguments: { ...run.draft, captureId: pending.captureId } });
-      expect(retry.content[0]).toMatchObject({ text: expect.stringContaining(pending.captureId) });
+      expect(retry.isError).toBe(true);
+      expect(JSON.stringify(retry)).toContain("CAPTURE_CHANGED");
       expect(run.submissions).toEqual([]);
     } finally { await run.close(); }
   });

@@ -85,9 +85,9 @@ Set `interactionMode` based on runtime context:
 - `interactive`: use when a user can review a prefilled confirmation form. This includes **every** slash command and chat message in a live session — even a bare `/publish-session` or a terse "just publish it, this is a demo."
 - `noninteractive`: use **only** for genuinely headless, flag-invoked execution with no further chat turn possible at all (`copilot -p`, `claude --print`, `codex exec`). The explicit publish request authorizes prompt-specified values or defaults, but unresolved secret findings still block upload.
 
-**The confirmation questionnaire (title, summary, audience, expiration, and warning acknowledgment) is mandatory for every interactive publication and can never be skipped, auto-approved, or inferred from the original publish request.** Do not read "explicit publish request" or "generate the metadata yourself" (Phase 4) as license to bypass showing the owner the filled-in proposal and waiting for their actual confirmation. If the host has no elicitation form, show the returned proposal as plain chat text and wait for the owner's reply before calling `publish_session` — that plain-text exchange **is** the mandatory questionnaire, not an optional extra.
+**The secret decision gate, one-shot metadata form, and non-editable recap (Phase 4) are mandatory for every interactive publication and can never be skipped, auto-approved, or inferred from the original publish request.** Do not read "explicit publish request" or "generate the metadata yourself" as license to bypass any of these code-enforced steps. If the host has no elicitation form, show each returned proposal as plain chat text and wait for the owner's reply before calling `save_session` again — that plain-text exchange **is** the mandatory step, not an optional extra.
 
-**Never rationalize `noninteractive` from urgency, terseness, or "this is just a demo" framing.** Only the literal absence of a further chat turn (a flag-invoked headless process) justifies skipping the questionnaire. Publishing a session — with real content, potentially including secrets — without that owner-facing confirmation in an interactive session is a critical safety failure, not an acceptable shortcut, regardless of how the request was phrased.
+**Never rationalize `noninteractive` from urgency, terseness, or "this is just a demo" framing.** Only the literal absence of a further chat turn (a flag-invoked headless process) justifies skipping this sequence. Publishing a session — with real content, potentially including secrets — without these owner-facing confirmations in an interactive session is a critical safety failure, not an acceptable shortcut, regardless of how the request was phrased.
 
 ## Phase 3: Full-Fidelity Capture and Client-Side Secret Scanning
 
@@ -95,52 +95,35 @@ Call the MCP `save_session` tool as the preferred one-step path. Use `prepare_se
 
 The MCP server must:
 
-- Read native journal events and supported dependencies without substituting a model-written transcript.
+- Read native journal events and supported dependencies without substituting a model-written transcript. Session artifacts are **always** gathered fresh; a stale or foreign `captureId` is never accepted as a shortcut to skip gathering.
 - Store the original capture in an owner-only local archive (`~/.session-registry/captures`).
-- Scan locally before transmitting anything to the hosted registry backend.
-- Return findings, review paths, or publish results without exposing secret values in chat.
+- Scan the gathered artifacts for secrets before transmitting anything to the hosted registry backend, and **always** report how many were found — this reporting step is code-enforced and never skipped, narrated away, or folded silently into another step.
 
-If findings are reported, require explicit owner decisions:
+## Phase 4: Code-Enforced Secret Decision, Metadata Form, and Recap
 
-- `accept-redaction`: redact detected secrets with safe placeholders.
-- `custom-replacement`: replace with owner-supplied safe values.
-- `false-positive`: mark verified non-secrets as false positives.
-- `acknowledge-unscanned`: acknowledge unscannable content.
+Once artifacts are gathered and scanned, the server drives a fixed, non-negotiable sequence in interactive mode. None of these steps can be skipped, merged, reordered, auto-approved, or inferred from the original publish request, regardless of how the agent or user phrases it:
 
-Unresolved detected secrets block upload. Never silently redact, ignore, or declare false positives on behalf of the owner.
+1. **Secret decision gate.** If any scanner findings are unresolved, the owner must make one explicit choice before anything else happens:
+   - Redact all detected secrets.
+   - Review and approve each finding individually (a per-finding loop, one decision per finding).
+   - Publish unredacted as an explicit override (never assumed, never defaulted).
 
-After the owner accepts or edits the scanner findings, ask a **separate, mandatory**
-question before publication: **"Anything else you'd like redacted that the scanner didn't
-flag?"** Do not combine this with the scanner-findings decision or metadata confirmation.
-Let the owner provide free text, exact strings, or replacements for internal project names,
-personal names, hostnames, URLs, or other sensitive content; also let them explicitly say
-that there is nothing more to redact. Convert each supplied target into an exact-text
-owner redaction and apply it to every scannable native source and publication metadata
-occurrence before calling `publish_session`. In an interactive session, never publish until
-this distinct additional-redaction decision has occurred.
+   Never silently redact, ignore, or declare false positives on the owner's behalf. This decision is separate from, and always precedes, the metadata form below.
 
-## Phase 4: Metadata and Policy Drafting
+1. **One-shot metadata form.** Present exactly one confirmation form containing all five fields together, filled in exactly once with no re-presentation on edits:
+   - `title` — YOU auto-generate a specific 1-120 character task title from approved conversation content; the form prefills it for owner confirmation/edits. Avoid generic placeholders such as "Saved session" or "Session export".
+   - `summary` — YOU auto-generate a 1-500 character summary of objective, outcome, decisions, and verification status; the form prefills it for owner confirmation/edits.
+   - `audience` — defaults to "Anyone with the link can view" unless the user specified otherwise. Preserve explicit user choices: `anyone`, `org:<github-org>`, `team:<org>/<team>`, `users:<user1>,<user2>`.
+   - `expiration` — defaults to the registry's 14-day default (omit to use it). Preserve explicit user choices: `never` / `null` for no expiration, or an ISO-8601 timestamp for a custom expiration.
+   - `additionalRedactions` — the owner's free-text answer to "anything else you'd like redacted that the scanner didn't flag?" (internal project names, personal names, hostnames, URLs, or other sensitive content not caught by the scanner), or an explicit statement that there is nothing more to redact. Each supplied target becomes an exact-text owner redaction applied to every scannable native source occurrence and every publication metadata occurrence.
 
-Generate publish metadata before calling the MCP tool:
+   If the host has no elicitation form, show the returned proposal as plain chat text containing all five fields and collect the owner's answers before calling `save_session` again with the same `captureId`.
 
-- `title`: a specific 1-120 character task title.
-- `summary`: a 1-500 character summary of objective, outcome, decisions, and verification status.
+1. **Separate, non-editable recap.** After the metadata form is answered, the server always shows one more confirmation containing a plain-text recap of every prior decision (secret decision, title, summary, audience, expiration, additional redactions) with **exactly one yes/no field** and no editable content. The owner must explicitly confirm this recap before anything uploads. A "no" answer cancels cleanly without uploading; it never silently falls back to the original metadata form or an assumed default.
 
-Avoid generic placeholders such as "Saved session" or "Session export".
+Unresolved detected secrets, an unanswered secret decision, an unanswered metadata form, or an unanswered recap each independently block upload. Do not read "explicit publish request" or "generate the metadata yourself" as license to bypass any of these three steps.
 
-Default publication policy unless the user specified otherwise:
-
-- `audiencePolicy`: Anyone with the link can view.
-- `expiresAt`: omit the field to use the registry's 14-day default.
-
-Preserve explicit user choices:
-
-- `anyone`
-- `org:<github-org>`
-- `team:<org>/<team>`
-- `users:<user1>,<user2>`
-- `never` / `null` for no expiration
-- ISO-8601 timestamps for custom expiration
+**Never rationalize `noninteractive` from urgency, terseness, or "this is just a demo" framing.** Only the literal absence of a further chat turn (a flag-invoked headless process) justifies skipping this sequence. Publishing a session — with real content, potentially including secrets — without these owner-facing confirmations in an interactive session is a critical safety failure, not an acceptable shortcut, regardless of how the request was phrased.
 
 ## Phase 5: Atomic Publication and Idempotent Error Handling
 

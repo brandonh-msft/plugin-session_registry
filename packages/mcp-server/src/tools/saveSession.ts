@@ -7,8 +7,10 @@ import type { NativeCaptureService, PrepareCaptureInput } from "../native/captur
 import { NativeCaptureError } from "../native/files.js";
 import {
   CaptureReviewRequiredError,
+  knownFindingIds,
   safeReviewText,
   scanNativeCapture,
+  type CaptureFinding,
   type CaptureResolution,
   type OwnerRedaction,
 } from "../native/review.js";
@@ -29,6 +31,9 @@ export interface SaveSessionDependencies {
   readonly publish: (input: PublishToolInput) => Promise<CallToolResult>;
   readonly confirm: (request: ElicitRequestFormParams) => Promise<ElicitResult | undefined>;
 }
+
+/** The owner's bulk choice for every scanner-detected secret in this save. */
+type SecretDecision = "redact-all" | "review-each" | "publish-unredacted";
 
 function response(value: object, isError = false): CallToolResult {
   return { ...(isError ? { isError: true } : {}), content: [{ type: "text", text: JSON.stringify(value) }] };
@@ -90,9 +95,68 @@ function parseOwnerRedactions(value: string): OwnerRedaction[] {
   });
 }
 
-export function saveConfirmation(
+/**
+ * Step 2 of the deterministic publish flow: a single-field choice, never a
+ * multi-field settings form. It always literally reports how many likely
+ * secrets the scanner found before asking how to handle them.
+ */
+function secretDecisionForm(
+  input: { readonly captureId: string; readonly harnessSessionId: string; readonly count: number },
+): ElicitRequestFormParams {
+  return {
+    mode: "form",
+    message: [
+      `The scanner found ${input.count} likely secret${input.count === 1 ? "" : "s"} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
+      "Choose how to handle every detected secret before continuing.",
+    ].join("\n\n"),
+    requestedSchema: {
+      type: "object",
+      properties: {
+        decision: {
+          type: "string",
+          title: "Detected secrets",
+          oneOf: [
+            { const: "redact-all", title: "Redact all detected secrets" },
+            { const: "review-each", title: "Review and approve each detected secret individually" },
+            { const: "publish-unredacted", title: "Publish unredacted (explicit owner override; not blocked)" },
+          ],
+        },
+      },
+      required: ["decision"],
+    },
+  };
+}
+
+/** One step of the "review-each" per-finding loop, never the secret text itself. */
+function perFindingForm(
+  input: { readonly captureId: string; readonly harnessSessionId: string; readonly finding: CaptureFinding; readonly position: number; readonly total: number },
+): ElicitRequestFormParams {
+  const { finding } = input;
+  return {
+    mode: "form",
+    message: [
+      `Finding ${input.position} of ${input.total} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
+      `Category: ${finding.category}. Severity: ${finding.severity}. Location: ${finding.source}.`,
+      `Proposed replacement if redacted: ${finding.proposedReplacement}`,
+    ].join("\n\n"),
+    requestedSchema: {
+      type: "object",
+      properties: {
+        redact: { type: "boolean", title: "Redact this finding", default: true },
+      },
+      required: ["redact"],
+    },
+  };
+}
+
+/**
+ * Step 4: the one-shot metadata form. Filled out exactly once per save -
+ * there is no confirmation/warning field here and no re-scan/re-present loop
+ * on edits. A separate, non-editable recap-and-confirm step follows it.
+ */
+function metadataForm(
   input: { captureId: string; harnessSessionId: string; title: string; summary: string;
-    audiencePolicy: AudiencePolicy; expiresAt?: string | null; requiresWarning: boolean },
+    audiencePolicy: AudiencePolicy; expiresAt?: string | null; ownerRedactions: readonly OwnerRedaction[] },
 ): ElicitRequestFormParams {
   const access = input.audiencePolicy.accessMode === "anonymous"
     ? "Anyone (anonymous)" : `Restricted: ${JSON.stringify(input.audiencePolicy.rules)}`;
@@ -100,13 +164,11 @@ export function saveConfirmation(
     mode: "form",
     message: [
       `Publish session ${input.harnessSessionId} (capture ${input.captureId}).`,
-      `Title: ${input.title}`,
-      `Summary: ${input.summary}`,
-      `Access: ${access}`,
-      `Expiration: ${input.expiresAt === undefined ? "14 days (default)" : input.expiresAt === null ? "No expiration" : input.expiresAt}`,
-      "Confirm these drafted values or edit them. Editing causes a re-scan and a fresh confirmation.",
-      ...(input.requiresWarning ? [NATIVE_SESSION_BUNDLE_WARNING] : []),
-      "Automated security detection is incomplete. You remain responsible for shared content.",
+      `Drafted title: ${input.title}`,
+      `Drafted summary: ${input.summary}`,
+      `Drafted access: ${access}`,
+      `Drafted expiration: ${input.expiresAt === undefined ? "14 days (default)" : input.expiresAt === null ? "No expiration" : input.expiresAt}`,
+      "Fill in or edit every field once. A separate recap will ask you to confirm before anything is uploaded.",
     ].join("\n\n"),
     // MCP forms require primitive properties, unlike the nested tool schema.
     requestedSchema: {
@@ -116,240 +178,312 @@ export function saveConfirmation(
         summary: { type: "string", title: "Summary", default: input.summary, minLength: 1, maxLength: 500 },
         audience: { type: "string", title: "Audience", description: AUDIENCE_INPUT_GUIDANCE, default: audienceText(input.audiencePolicy), minLength: 1 },
         expiration: { type: "string", title: "Expiration", description: "Number of days (e.g. 7 days), never, or a future ISO 8601 timestamp.", default: expirationText(input.expiresAt), minLength: 1 },
-        confirmPublish: { type: "boolean", title: "Publish this session with the settings shown", default: false },
-        ...(input.requiresWarning ? {
-          acknowledgeWarning: { type: "boolean" as const, title: "I accept the native-package warning above", default: false },
-        } : {}),
-      },
-      required: ["title", "summary", "audience", "expiration", "confirmPublish", ...(input.requiresWarning ? ["acknowledgeWarning"] : [])],
-    },
-  };
-}
-
-function additionalRedactionConfirmation(
-  input: { captureId: string; harnessSessionId: string; ownerRedactions: readonly OwnerRedaction[] },
-): ElicitRequestFormParams {
-  return {
-    mode: "form",
-    message: [
-      `The scanner findings and publication settings for session ${input.harnessSessionId} are approved.`,
-      "Anything else you'd like redacted that the scanner didn't flag?",
-      "Add internal project names, personal names, hostnames, URLs, or other sensitive text. Leave the field blank and confirm to proceed without additional redactions.",
-    ].join("\n\n"),
-    requestedSchema: {
-      type: "object",
-      properties: {
         additionalRedactions: {
           type: "string",
           title: "Additional redactions (optional)",
           description: 'One item per line: text to redact, or "text -> replacement" for a custom replacement (default replacement is [REDACTED]). Applied to every scannable native source and publication metadata occurrence, matched case-insensitively.',
           default: ownerRedactionsText(input.ownerRedactions),
         },
-        confirmAdditionalRedactions: {
-          type: "boolean",
-          title: "I reviewed additional redactions and want to continue",
-          default: false,
-        },
       },
-      required: ["additionalRedactions", "confirmAdditionalRedactions"],
+      required: ["title", "summary", "audience", "expiration", "additionalRedactions"],
     },
   };
 }
 
+function secretDecisionSummary(decision: SecretDecision | undefined, textFindingCount: number): string {
+  if (textFindingCount === 0) return "The scanner found no likely secrets.";
+  const noun = `${textFindingCount} detected secret${textFindingCount === 1 ? "" : "s"}`;
+  switch (decision) {
+    case "redact-all": return `${noun} will be redacted.`;
+    case "review-each": return `${noun} were reviewed individually and resolved.`;
+    case "publish-unredacted": return `${noun} will be published unredacted (explicit owner override).`;
+    default: return `${noun} were resolved.`;
+  }
+}
+
+/**
+ * Step 5: a separate, non-editable recap of every prior decision (secret
+ * handling and the filled-in metadata form) with exactly one yes/no field.
+ * None of the recapped values can be changed here; edit the earlier form
+ * instead of resubmitting a changed answer at this step.
+ */
+function recapForm(
+  input: {
+    captureId: string; harnessSessionId: string; title: string; summary: string;
+    audiencePolicy: AudiencePolicy; expiresAt?: string | null; ownerRedactions: readonly OwnerRedaction[];
+    secretDecision: SecretDecision | undefined; textFindingCount: number; requiresWarning: boolean;
+  },
+): ElicitRequestFormParams {
+  const access = input.audiencePolicy.accessMode === "anonymous"
+    ? "Anyone (anonymous)" : `Restricted: ${JSON.stringify(input.audiencePolicy.rules)}`;
+  return {
+    mode: "form",
+    message: [
+      `Final recap for session ${input.harnessSessionId} (capture ${input.captureId}). Nothing below is editable here.`,
+      `Secrets: ${secretDecisionSummary(input.secretDecision, input.textFindingCount)}`,
+      `Title: ${input.title}`,
+      `Summary: ${input.summary}`,
+      `Access: ${access}`,
+      `Expiration: ${input.expiresAt === undefined ? "14 days (default)" : input.expiresAt === null ? "No expiration" : input.expiresAt}`,
+      `Additional redactions: ${input.ownerRedactions.length === 0 ? "none" : ownerRedactionsText(input.ownerRedactions)}`,
+      ...(input.requiresWarning ? [NATIVE_SESSION_BUNDLE_WARNING] : []),
+      "Automated security detection is incomplete. You remain responsible for shared content.",
+    ].join("\n\n"),
+    requestedSchema: {
+      type: "object",
+      properties: {
+        confirmPublish: { type: "boolean", title: "Publish this session with everything shown above", default: false },
+      },
+      required: ["confirmPublish"],
+    },
+  };
+}
+
+type SecretGateOutcome =
+  | { readonly kind: "unavailable" }
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "resolved"; readonly resolutions: readonly CaptureResolution[]; readonly decision: SecretDecision };
+
+/**
+ * Steps 1-3 of the deterministic publish flow: report how many secrets were
+ * found, then require the owner to choose redact-all, review-each, or
+ * publish-unredacted before anything else can happen. Returns "unavailable"
+ * when the connected client cannot render forms at all; callers fall back to
+ * the existing review-required/resolutions round trip in that case.
+ */
+async function runSecretDecisionGate(
+  deps: SaveSessionDependencies,
+  ctx: { readonly captureId: string; readonly harnessSessionId: string },
+  pending: readonly CaptureFinding[],
+): Promise<SecretGateOutcome> {
+  const decisionAnswer = await deps.confirm(secretDecisionForm({ ...ctx, count: pending.length }));
+  if (decisionAnswer === undefined) return { kind: "unavailable" };
+  if (decisionAnswer.action !== "accept") return { kind: "cancelled" };
+  const decision = decisionAnswer.content?.decision;
+  if (decision !== "redact-all" && decision !== "review-each" && decision !== "publish-unredacted") {
+    throw new NativeCaptureError("INVALID_CONFIRMATION", "Choose redact-all, review-each, or publish-unredacted for the detected secrets.");
+  }
+  if (decision === "redact-all") {
+    return { kind: "resolved", decision, resolutions: pending.map((finding) => ({ findingId: finding.id, action: { kind: "accept-redaction" } })) };
+  }
+  if (decision === "publish-unredacted") {
+    return { kind: "resolved", decision, resolutions: pending.map((finding) => ({ findingId: finding.id, action: { kind: "owner-override-unredacted" } })) };
+  }
+  const resolutions: CaptureResolution[] = [];
+  for (const finding of pending) {
+    const answer = await deps.confirm(perFindingForm({ ...ctx, finding, position: resolutions.length + 1, total: pending.length }));
+    if (answer === undefined) return { kind: "unavailable" };
+    if (answer.action !== "accept") return { kind: "cancelled" };
+    const redact = answer.content?.redact;
+    if (typeof redact !== "boolean") {
+      throw new NativeCaptureError("INVALID_CONFIRMATION", "Answer whether to redact this finding.");
+    }
+    resolutions.push({ findingId: finding.id, action: { kind: redact ? "accept-redaction" : "owner-override-unredacted" } });
+  }
+  return { kind: "resolved", decision, resolutions };
+}
+
 export function createSaveHandler(deps: SaveSessionDependencies) {
   return async (input: SaveSessionInput): Promise<CallToolResult> => {
-    let captureId = input.captureId;
+    let captureId: string | undefined;
     let reviewPath: string | undefined;
     try {
       metadata(input);
-      if (captureId === undefined) {
-        const prepared = await deps.captures.prepare(input);
-        captureId = prepared.captureId;
-        reviewPath = prepared.reviewPath;
+      // Step 0: gathering session artifacts is never conditional on a
+      // caller-supplied captureId. A fresh save always re-gathers; a
+      // caller-supplied captureId is only accepted as a resume hint when it
+      // matches what was just freshly gathered from the exact same source.
+      const prepared = await deps.captures.prepare(input);
+      captureId = prepared.captureId;
+      reviewPath = prepared.reviewPath;
+      if (input.captureId !== undefined && input.captureId !== captureId) {
+        throw new NativeCaptureError("CAPTURE_CHANGED", "The session changed since an earlier response. Resolve findings, edits, and confirmation again using this freshly gathered captureId.");
       }
       const { archive } = await deps.captures.load(captureId);
       if (archive.harness.name !== input.harness ||
           (input.harnessSessionId !== undefined && archive.harnessSessionId !== input.harnessSessionId)) {
         throw new NativeCaptureError("SESSION_ID_MISMATCH", "The prepared capture belongs to a different requested session.");
       }
+      const interactive = input.interactionMode !== "noninteractive";
+      const ctx = { captureId, harnessSessionId: archive.harnessSessionId };
+
       let ownerRedactions = [...(input.ownerRedactions ?? [])];
-      let sourceFindings = scanNativeCapture(archive, captureId, ownerRedactions);
-      const requiresAdditionalRedactionReview = sourceFindings.some((finding) => !finding.manualReview);
-      const sourceFindingIds = new Set(sourceFindings.map((finding) => finding.id));
-      const pendingWarnings = sourceFindings.filter((finding) => finding.manualReview &&
-        !(input.resolutions ?? []).some((resolution) => resolution.findingId === finding.id));
-      let resolutions: CaptureResolution[] = [
-        ...(input.resolutions ?? []),
-        ...pendingWarnings.map(({ id }): CaptureResolution => ({ findingId: id, action: { kind: "acknowledge-unscanned" } })),
-      ];
-      // These provisional warning decisions are used only for local validation.
-      // They reach publication only after form acceptance or explicit headless
-      // publication authorization. Actual secret decisions are never inferred.
       let candidate = { title: input.title, summary: input.summary };
       let audiencePolicy = input.audiencePolicy ?? { accessMode: "anonymous" as const };
       let expiresAt = input.expiresAt;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const reviewed = await deps.captures.review(captureId, resolutions, candidate, ownerRedactions);
-        if (reviewed.title !== candidate.title || reviewed.summary !== candidate.summary) {
-          // Metadata is a separate draft revision. Its old offsets/IDs must not
-          // be replayed against already-redacted text in publish_session.
-          resolutions = [
-            ...resolutions.filter((resolution) => sourceFindingIds.has(resolution.findingId)),
-            ...reviewed.metadataResolutions,
-          ];
-          candidate = { title: reviewed.title, summary: reviewed.summary };
-          continue;
+      let secretDecision: SecretDecision | undefined;
+
+      // Step 1: scan.
+      const findings = scanNativeCapture(archive, captureId, ownerRedactions);
+      const textFindings = findings.filter((finding) => !finding.manualReview);
+      const manualFindings = findings.filter((finding) => finding.manualReview);
+
+      let resolutions: CaptureResolution[] = [...(input.resolutions ?? [])];
+      const resolvedIds = () => new Set(resolutions.map((resolution) => resolution.findingId));
+
+      // Step 2-3: report the finding count and require an explicit bulk (or
+      // per-finding) decision before anything else can proceed.
+      const unresolvedText = textFindings.filter((finding) => !resolvedIds().has(finding.id));
+      if (interactive && unresolvedText.length > 0) {
+        const gate = await runSecretDecisionGate(deps, ctx, unresolvedText);
+        if (gate.kind === "cancelled") {
+          return response({ status: "cancelled", captureId, message: "Nothing was uploaded; the local capture remains available." });
         }
-        candidate = { title: reviewed.title, summary: reviewed.summary };
-        metadata(candidate);
-        let proposal = {
-          captureId, ...candidate, audiencePolicy,
-          ...(expiresAt === undefined ? {} : { expiresAt }),
-          ...(ownerRedactions.length === 0 ? {} : { ownerRedactions }),
-        };
-        const request = saveConfirmation({
-          ...proposal, harnessSessionId: archive.harnessSessionId, requiresWarning: pendingWarnings.length > 0,
-        });
-        const confirmation = input.interactionMode === "noninteractive"
-          ? { action: "accept" as const, content: { ...candidate, audience: audienceText(audiencePolicy),
-            expiration: expirationText(expiresAt), confirmPublish: true, acknowledgeWarning: true } }
-          : await deps.confirm(request);
-        if (confirmation === undefined) {
+        if (gate.kind === "resolved") {
+          resolutions = [...resolutions, ...gate.resolutions];
+          secretDecision = gate.decision;
+        }
+        // "unavailable" falls through to the existing review-required path below.
+      }
+      resolutions = [
+        ...resolutions,
+        ...manualFindings
+          .filter((finding) => !resolvedIds().has(finding.id))
+          .map((finding): CaptureResolution => ({ findingId: finding.id, action: { kind: "acknowledge-unscanned" } })),
+      ];
+
+      resolutions = resolutions.filter((resolution) => knownFindingIds(archive, ctx.captureId, candidate, ownerRedactions).has(resolution.findingId));
+      let reviewed = await deps.captures.review(captureId, resolutions, candidate, ownerRedactions);
+      if (reviewed.title !== candidate.title || reviewed.summary !== candidate.summary) {
+        // Metadata is a separate draft revision. Its old offsets/IDs must not
+        // be replayed against already-redacted text in publish_session.
+        const rebasedIds = knownFindingIds(archive, captureId, { title: reviewed.title, summary: reviewed.summary }, ownerRedactions);
+        resolutions = [...resolutions.filter((resolution) => rebasedIds.has(resolution.findingId)), ...reviewed.metadataResolutions];
+      }
+      candidate = { title: reviewed.title, summary: reviewed.summary };
+      metadata(candidate);
+
+      let requiresWarning = manualFindings.length > 0;
+
+      // Step 4: the one-shot metadata form, filled out exactly once.
+      if (interactive) {
+        const formRequest = metadataForm({ captureId, harnessSessionId: archive.harnessSessionId, ...candidate, audiencePolicy, expiresAt, ownerRedactions });
+        const answer = await deps.confirm(formRequest);
+        if (answer === undefined) {
           return response({
-            status: "confirmation-required", captureId, reviewPath, proposal, confirmation: request,
-            findings: pendingWarnings,
-            instructions: "No upload occurred. Show this filled-in proposal and collect explicit confirmation and warning acknowledgment in plain text or the supplied primitive form. Then separately ask whether anything else should be redacted that the scanner did not flag, collect exact-text rules or an explicit no-more-redactions decision, and call publish_session with this captureId, the approved values, explicit finding resolutions, and additionalRedactionsConfirmed:true. Do not ask for the native ID, create a blank metadata form, or prepare another capture.",
+            status: "confirmation-required", stage: "metadata", captureId, reviewPath,
+            proposal: { captureId, ...candidate, audiencePolicy, ...(expiresAt === undefined ? {} : { expiresAt }) },
+            confirmation: formRequest, findings: manualFindings, secretDecision,
+            instructions: "No upload occurred. Show this filled-in proposal and collect the title, summary, audience, expiration, and additional redactions in plain text or the supplied primitive form, then call save_session again with this exact captureId and the same resolutions. Do not ask for the native ID, create a blank metadata form, or prepare another capture.",
           });
         }
-        if (confirmation.action !== "accept") return response({ status: "cancelled", captureId, message: "Nothing was uploaded; the local capture remains available." });
-        const content = confirmation.content;
+        if (answer.action !== "accept") return response({ status: "cancelled", captureId, message: "Nothing was uploaded; the local capture remains available." });
+        const content = answer.content;
         if (typeof content?.title !== "string" || typeof content.summary !== "string" ||
-            typeof content.audience !== "string" || typeof content.expiration !== "string") {
-          throw new NativeCaptureError("INVALID_CONFIRMATION", "Confirmation must contain the proposed or edited title, summary, audience, and expiration.");
+            typeof content.audience !== "string" || typeof content.expiration !== "string" ||
+            typeof content.additionalRedactions !== "string") {
+          throw new NativeCaptureError("INVALID_CONFIRMATION", "Confirmation must contain title, summary, audience, expiration, and additional redactions.");
         }
         const edited = { title: content.title, summary: content.summary };
         const editedAudience = content.audience === audienceText(audiencePolicy) ? audiencePolicy : parseAudienceText(content.audience);
         const editedExpiration = content.expiration === expirationText(expiresAt) ? expiresAt : parseExpiration(content.expiration);
+        const editedOwnerRedactions = content.additionalRedactions === ownerRedactionsText(ownerRedactions)
+          ? ownerRedactions : parseOwnerRedactions(content.additionalRedactions);
         metadata(edited);
-        const metadataChanged = edited.title !== candidate.title || edited.summary !== candidate.summary;
-        const settingsChanged = metadataChanged ||
-          audienceText(editedAudience) !== audienceText(audiencePolicy) || editedExpiration !== expiresAt;
-        if (settingsChanged) {
-          if (metadataChanged) {
-            resolutions = resolutions.filter((resolution) => sourceFindingIds.has(resolution.findingId));
+        candidate = edited;
+        audiencePolicy = editedAudience;
+        expiresAt = editedExpiration;
+        ownerRedactions = editedOwnerRedactions;
+
+        // Re-scan exactly once for findings the edit itself introduced (e.g.
+        // removed additional redactions exposing a previously-covered
+        // secret). This never re-presents the metadata form; new findings
+        // are auto-resolved using the previously-chosen bulk decision, a
+        // per-finding loop when "review-each" was chosen, or a fresh gate
+        // when no decision existed because the original scan found nothing.
+        // Resolutions that no longer correspond to any current source or
+        // metadata finding (e.g. an edit that removed the secret entirely)
+        // are dropped rather than replayed, since resolveNativeCapture
+        // rejects any resolution referencing an unrecognized finding ID.
+        const rescanned = scanNativeCapture(archive, captureId, ownerRedactions);
+        const currentKnownIds = knownFindingIds(archive, captureId, candidate, ownerRedactions);
+        resolutions = resolutions.filter((resolution) => currentKnownIds.has(resolution.findingId));
+        const rescannedText = rescanned.filter((finding) => !finding.manualReview);
+        const rescannedManual = rescanned.filter((finding) => finding.manualReview);
+        requiresWarning = rescannedManual.length > 0;
+        const newText = rescannedText.filter((finding) => !resolvedIds().has(finding.id));
+        if (newText.length > 0) {
+          if (secretDecision === "redact-all") {
+            resolutions = [...resolutions, ...newText.map((finding): CaptureResolution => ({ findingId: finding.id, action: { kind: "accept-redaction" } }))];
+          } else if (secretDecision === "publish-unredacted") {
+            resolutions = [...resolutions, ...newText.map((finding): CaptureResolution => ({ findingId: finding.id, action: { kind: "owner-override-unredacted" } }))];
+          } else if (secretDecision === "review-each") {
+            const gate = await runSecretDecisionGate(deps, ctx, newText);
+            // "review-each" was already the owner's standing choice, so only
+            // per-finding answers are meaningful here; still honor a cancel.
+            if (gate.kind === "cancelled") return response({ status: "cancelled", captureId, message: "Nothing was uploaded; the local capture remains available." });
+            if (gate.kind === "resolved") resolutions = [...resolutions, ...gate.resolutions];
+          } else {
+            const gate = await runSecretDecisionGate(deps, ctx, newText);
+            if (gate.kind === "cancelled") return response({ status: "cancelled", captureId, message: "Nothing was uploaded; the local capture remains available." });
+            if (gate.kind === "resolved") {
+              resolutions = [...resolutions, ...gate.resolutions];
+              secretDecision = gate.decision;
+            }
+            // "unavailable" falls through to the review-required path below.
           }
-          candidate = edited;
-          audiencePolicy = editedAudience;
-          expiresAt = editedExpiration;
-          sourceFindings = scanNativeCapture(archive, captureId, ownerRedactions);
-          resolutions = resolutions.filter((resolution) =>
-            sourceFindings.some((finding) => finding.id === resolution.findingId));
-          const rereviewed = await deps.captures.review(captureId, resolutions, candidate, ownerRedactions);
-          if (rereviewed.title !== candidate.title || rereviewed.summary !== candidate.summary) {
-            resolutions = [
-              ...resolutions.filter((resolution) =>
-                sourceFindings.some((finding) => finding.id === resolution.findingId)),
-              ...rereviewed.metadataResolutions,
-            ];
-            candidate = { title: rereviewed.title, summary: rereviewed.summary };
-          }
-          metadata(candidate);
-          proposal = {
-            captureId, ...candidate, audiencePolicy,
-            ...(expiresAt === undefined ? {} : { expiresAt }),
-            ...(ownerRedactions.length === 0 ? {} : { ownerRedactions }),
-          };
         }
-        if (content.confirmPublish !== true || (pendingWarnings.length > 0 && content.acknowledgeWarning !== true)) {
-          return response({
-            status: "confirmation-required", captureId, proposal, confirmation: request, findings: pendingWarnings,
-            message: "Nothing was uploaded. Explicit publication confirmation and the displayed warning acknowledgment are required.",
-            instructions: "Keep this exact reviewed proposal, including edited access/expiry. Do not revert to the initial draft or switch to noninteractive. Continue confirmation with the same captureId.",
-          });
+        resolutions = [
+          ...resolutions,
+          ...rescannedManual
+            .filter((finding) => !resolvedIds().has(finding.id))
+            .map((finding): CaptureResolution => ({ findingId: finding.id, action: { kind: "acknowledge-unscanned" } })),
+        ];
+        reviewed = await deps.captures.review(captureId, resolutions, candidate, ownerRedactions);
+        if (reviewed.title !== candidate.title || reviewed.summary !== candidate.summary) {
+          const rebasedIds = knownFindingIds(archive, captureId, { title: reviewed.title, summary: reviewed.summary }, ownerRedactions);
+          resolutions = [...resolutions.filter((resolution) => rebasedIds.has(resolution.findingId)), ...reviewed.metadataResolutions];
         }
-        let additionalRedactionsConfirmed: true | undefined;
-        if (input.interactionMode === "interactive" && requiresAdditionalRedactionReview) {
-          const additionalRedactionRequest = additionalRedactionConfirmation({
-            captureId,
-            harnessSessionId: archive.harnessSessionId,
-            ownerRedactions,
-          });
-          const additionalRedactionConfirmationResult = await deps.confirm(additionalRedactionRequest);
-          if (additionalRedactionConfirmationResult === undefined) {
-            return response({
-              status: "confirmation-required",
-              stage: "additional-redactions",
-              captureId,
-              proposal,
-              confirmation: additionalRedactionRequest,
-              instructions: "No upload occurred. Present this distinct additional-redaction prompt after the scanner finding decision, then call publish_session with the same captureId and additionalRedactionsConfirmed:true.",
-            });
-          }
-          if (additionalRedactionConfirmationResult.action !== "accept") {
-            return response({ status: "cancelled", captureId, message: "Nothing was uploaded; the local capture remains available." });
-          }
-          const additionalRedactionContent = additionalRedactionConfirmationResult.content;
-          if (typeof additionalRedactionContent?.additionalRedactions !== "string" ||
-              additionalRedactionContent.confirmAdditionalRedactions !== true) {
-            return response({
-              status: "confirmation-required",
-              stage: "additional-redactions",
-              captureId,
-              proposal,
-              confirmation: additionalRedactionRequest,
-              message: "Nothing was uploaded. Confirm the distinct additional-redaction review to continue.",
-            });
-          }
-          ownerRedactions = parseOwnerRedactions(additionalRedactionContent.additionalRedactions);
-          sourceFindings = scanNativeCapture(archive, captureId, ownerRedactions);
-          resolutions = resolutions.filter((resolution) =>
-            sourceFindings.some((finding) => finding.id === resolution.findingId));
-          const additionalRedactionReview = await deps.captures.review(
-            captureId,
-            resolutions,
-            candidate,
-            ownerRedactions,
-          );
-          candidate = {
-            title: additionalRedactionReview.title,
-            summary: additionalRedactionReview.summary,
-          };
-          metadata(candidate);
-          proposal = {
-            captureId,
-            ...candidate,
-            audiencePolicy,
-            ...(expiresAt === undefined ? {} : { expiresAt }),
-            ...(ownerRedactions.length === 0 ? {} : { ownerRedactions }),
-          };
-          additionalRedactionsConfirmed = true;
-        }
-        const confirmedRequest: PublishToolInput = {
-          ...proposal,
-          resolutions,
-          confirmed: true,
-          ...(additionalRedactionsConfirmed === undefined ? {} : { additionalRedactionsConfirmed }),
-        };
-        const result = await deps.publish(confirmedRequest);
-        if (result.isError) {
-          return { ...result, content: [...result.content, {
-            type: "text",
-            text: JSON.stringify({
-              instructions: "Retry publish_session with this exact confirmed request; do not repeat source preparation or start a new save.",
-              retryRequest: confirmedRequest,
-            }),
-          }] };
-        }
-        if (input.interactionMode === "noninteractive" && !result.isError) {
-          return { ...result, content: [...result.content, { type: "text", text: JSON.stringify({
-            interactionMode: "noninteractive",
-            warning: NATIVE_SESSION_BUNDLE_WARNING,
-            disclaimer: "Automated security detection is incomplete. The owner remains responsible for shared content.",
-          }) }] };
-        }
-        return result;
+        candidate = { title: reviewed.title, summary: reviewed.summary };
+        metadata(candidate);
       }
-      return response({ status: "confirmation-required", captureId, message: "Too many consecutive edits. Nothing was uploaded; continue with this capture after reviewing the final metadata." });
+
+      const proposal = {
+        captureId, ...candidate, audiencePolicy,
+        ...(expiresAt === undefined ? {} : { expiresAt }),
+        ...(ownerRedactions.length === 0 ? {} : { ownerRedactions }),
+      };
+
+      // Step 5: a separate, non-editable recap with exactly one yes/no field.
+      if (interactive) {
+        const recapRequest = recapForm({
+          captureId, harnessSessionId: archive.harnessSessionId, ...candidate, audiencePolicy, expiresAt, ownerRedactions,
+          secretDecision, textFindingCount: textFindings.length, requiresWarning,
+        });
+        const recapAnswer = await deps.confirm(recapRequest);
+        if (recapAnswer === undefined) {
+          return response({
+            status: "confirmation-required", stage: "recap", captureId, proposal, confirmation: recapRequest,
+            findings: manualFindings, secretDecision,
+            instructions: "No upload occurred. Present this exact non-editable recap after the metadata form and collect a single yes/no confirmation, then call save_session again with this exact captureId and the same resolutions.",
+          });
+        }
+        if (recapAnswer.action !== "accept" || recapAnswer.content?.confirmPublish !== true) {
+          return response({ status: "cancelled", captureId, message: "Nothing was uploaded; the local capture remains available." });
+        }
+      }
+
+      const confirmedRequest: PublishToolInput = {
+        ...proposal, resolutions, confirmed: true, additionalRedactionsConfirmed: true,
+      };
+      const result = await deps.publish(confirmedRequest);
+      if (result.isError) {
+        return { ...result, content: [...result.content, {
+          type: "text",
+          text: JSON.stringify({
+            instructions: "Retry publish_session with this exact confirmed request; do not repeat source preparation or start a new save.",
+            retryRequest: confirmedRequest,
+          }),
+        }] };
+      }
+      if (!interactive) {
+        return { ...result, content: [...result.content, { type: "text", text: JSON.stringify({
+          interactionMode: "noninteractive",
+          warning: NATIVE_SESSION_BUNDLE_WARNING,
+          disclaimer: "Automated security detection is incomplete. The owner remains responsible for shared content.",
+        }) }] };
+      }
+      return result;
     } catch (error) {
       if (error instanceof CaptureReviewRequiredError) {
         return response({

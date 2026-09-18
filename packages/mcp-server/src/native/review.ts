@@ -466,6 +466,24 @@ export function scanNativeCapture(
     .map(publicFinding);
 }
 
+/**
+ * The exact set of finding IDs `resolveNativeCapture` would recognize as
+ * "known" for this archive/metadata/owner-redaction combination. Callers use
+ * this to drop resolutions that no longer correspond to any current finding
+ * (for example, a metadata edit that removed the secret a resolution used to
+ * target) *before* calling `resolveNativeCapture`, which otherwise rejects
+ * any resolution referencing an unrecognized finding ID as invalid rather
+ * than treating it as moot.
+ */
+export function knownFindingIds(
+  archive: NativeSessionArchive,
+  seed: string,
+  metadata?: { readonly title: string; readonly summary: string },
+  ownerRedactions: readonly OwnerRedaction[] = [],
+): ReadonlySet<string> {
+  return new Set(locateFindings(archive, seed, metadata, ownerRedactions).map((finding) => finding.id));
+}
+
 export interface ReviewedCapture {
   readonly archive: NativeSessionArchive;
   readonly content: string;
@@ -585,7 +603,7 @@ export function resolveNativeCapture(
       expectedFalsePositives.add(findingKey(finding));
       continue;
     }
-    if (action.kind !== "false-positive") {
+    if (action.kind !== "false-positive" && action.kind !== "owner-override-unredacted") {
       if (action.kind === "custom-replacement" && finding.category.split("+").includes("credential-field")) {
         expectedFalsePositives.add(JSON.stringify([
           finding.target, finding.leafPath, finding.leafOffset, "credential-field", action.replacementText,
@@ -598,6 +616,7 @@ export function resolveNativeCapture(
       const earlierAction = actions.get(earlier.id)!;
       if (earlier.target !== finding.target || earlier.leafPath !== finding.leafPath ||
           earlier.leafOffset >= finding.leafOffset || earlierAction.kind === "false-positive" ||
+          earlierAction.kind === "owner-override-unredacted" ||
           earlierAction.kind === "acknowledge-unscanned") continue;
       offset += (earlierAction.kind === "accept-redaction" ? "[REDACTED]" : earlierAction.replacementText).length - earlier.leafLength;
     }
@@ -615,7 +634,7 @@ export function resolveNativeCapture(
       }
       return {
         findingIndex,
-        action: action.kind === "false-positive" ? action : {
+        action: (action.kind === "false-positive" || action.kind === "owner-override-unredacted") ? action : {
           kind: "custom-replacement",
           replacementText: encodeFragment(action.kind === "accept-redaction" ? "[REDACTED]" : action.replacementText, finding.encodingDepth),
         },
@@ -643,7 +662,8 @@ export function resolveNativeCapture(
   }));
   for (const finding of findings) {
     const action = actions.get(finding.id)!;
-    if (action.kind === "false-positive" || action.kind === "acknowledge-unscanned") continue;
+    if (action.kind === "false-positive" || action.kind === "owner-override-unredacted" ||
+        action.kind === "acknowledge-unscanned") continue;
     redactions.push({ id: finding.id, category: finding.category, source: safeReviewText(remapSource(finding.source)) });
   }
   const files = archive.files.map((file, index): NativeArchiveFile => {

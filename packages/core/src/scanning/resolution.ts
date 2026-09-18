@@ -13,7 +13,16 @@ import type { Finding } from "./scanner.js";
 export type ResolutionAction =
   | { readonly kind: "accept-redaction" }
   | { readonly kind: "custom-replacement"; readonly replacementText: string }
-  | { readonly kind: "false-positive" };
+  | { readonly kind: "false-positive" }
+  /**
+   * Distinct from `false-positive`: the owner asserts the matched text IS a
+   * real secret/sensitive value, but has made an explicit bulk decision to
+   * publish it unredacted anyway (the "publish unredacted" choice in the
+   * secret-decision gate). Kept as its own kind so audit trails never
+   * conflate "not actually a secret" with "a secret the owner chose to
+   * expose"; text is left untouched either way.
+   */
+  | { readonly kind: "owner-override-unredacted" };
 
 export interface FindingResolution {
   readonly findingIndex: number;
@@ -86,6 +95,7 @@ function replacementFor(action: ResolutionAction, originalText: string): string 
     case "custom-replacement":
       return action.replacementText;
     case "false-positive":
+    case "owner-override-unredacted":
       return originalText;
     default: {
       const exhaustive: never = action;
