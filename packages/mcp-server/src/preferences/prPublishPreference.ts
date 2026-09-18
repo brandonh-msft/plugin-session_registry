@@ -1,16 +1,30 @@
 /**
- * Preference storage for the PR-Publish Prompt (PRPP-7/PRPP-8). Two
+ * Preference storage for the PR-Publish Prompt (PRPP-6/PRPP-7/PRPP-8). Two
  * independent scopes exist so a developer's "stop asking" choice sticks at
- * exactly the granularity they picked:
+ * exactly the granularity they picked, and both live inside the *harness's
+ * own* config directory rather than a bespoke Session Registry folder --
+ * the developer already has `.copilot`, `.claude`, or `.codex` (repo-level
+ * and/or in their home directory); adding a brand-new top-level folder for
+ * one small flag would just be more clutter to notice, understand, and
+ * (for the repo-level copy) remember to gitignore.
  *
- * - *Session-scoped*: a git-ignored marker file at the workspace/worktree
- *   root, `.session-registry/pr-publish-prompt.json`. A "session" in this
- *   app's model is exactly one worktree, so this file's lifetime naturally
- *   matches "this session" -- a brand-new worktree never inherits it.
- * - *User-scoped*: `~/.session-registry/preferences.json`, outside any
- *   repo, so it follows the developer across every workspace. Namespaced
- *   within a JSON object (not a bare marker file) because this directory
- *   may hold other future per-user preferences.
+ * - *Session-scoped*: `<workspaceRoot>/<harnessConfigDir>/session-registry/
+ *   pr-publish-prompt.json`. A "session" in this app's model is exactly one
+ *   worktree, so this file's lifetime naturally matches "this session" -- a
+ *   brand-new worktree never inherits it. It sits under the harness's own
+ *   directory, which developers already treat as local/ignorable, rather
+ *   than under a new repo-root folder.
+ * - *User-scoped*: `<harnessHomeDir>/session-registry/preferences.json`,
+ *   where `harnessHomeDir` is resolved with the same environment-variable
+ *   overrides (`COPILOT_HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and their
+ *   `SESSION_REGISTRY_*` overrides) already used for native session capture
+ *   in `../native/captures.ts`, so a developer who relocated their harness
+ *   home directory gets the same preference file relocated with it.
+ *
+ * Both scopes nest the flag one level deeper, in a `session-registry`
+ * subdirectory, so this file never appears unexpectedly alongside the
+ * harness's own files inside `.copilot`/`.claude`/`.codex` and so the same
+ * subdirectory can hold future per-harness preferences without collisions.
  *
  * Both reads tolerate a missing or unparsable file by treating it as "flag
  * not set" -- never as an error -- so a corrupted preferences file can
@@ -21,26 +35,51 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { type NativeCliHarness } from "@session-registry/core";
 
 export type PrPublishPreferenceScope = "session" | "user";
 
 export interface PrPublishPreferenceDeps {
   readonly homedir: () => string;
+  readonly env: NodeJS.ProcessEnv;
 }
 
-export const defaultPrPublishPreferenceDeps: PrPublishPreferenceDeps = { homedir };
+export const defaultPrPublishPreferenceDeps: PrPublishPreferenceDeps = { homedir, env: process.env };
 
-const SESSION_MARKER_RELATIVE_SEGMENTS = [".session-registry", "pr-publish-prompt.json"];
-const USER_PREFERENCES_RELATIVE_SEGMENTS = [".session-registry", "preferences.json"];
+/** The harness's own config directory name, used at both the repo/worktree root and beneath the user's home directory. */
+const HARNESS_CONFIG_DIR_NAMES: Record<NativeCliHarness, string> = {
+  "github-copilot-cli": ".copilot",
+  "claude-code": ".claude",
+  "codex-cli": ".codex",
+};
 
-export function sessionMarkerPath(workspaceRoot: string): string {
-  return join(workspaceRoot, ...SESSION_MARKER_RELATIVE_SEGMENTS);
+/** Environment variables that can relocate a harness's home directory, matching `../native/captures.ts`'s precedent. */
+const HARNESS_HOME_ENV_VARS: Record<NativeCliHarness, readonly [sessionRegistryOverride: string, harnessNative: string]> = {
+  "github-copilot-cli": ["SESSION_REGISTRY_COPILOT_HOME", "COPILOT_HOME"],
+  "claude-code": ["SESSION_REGISTRY_CLAUDE_HOME", "CLAUDE_CONFIG_DIR"],
+  "codex-cli": ["SESSION_REGISTRY_CODEX_HOME", "CODEX_HOME"],
+};
+
+const PREFERENCE_SUBDIRECTORY = "session-registry";
+
+function harnessHomeDir(harness: NativeCliHarness, deps: PrPublishPreferenceDeps): string {
+  const [sessionRegistryOverride, harnessNative] = HARNESS_HOME_ENV_VARS[harness];
+  return (
+    deps.env[sessionRegistryOverride] ??
+    deps.env[harnessNative] ??
+    join(deps.homedir(), HARNESS_CONFIG_DIR_NAMES[harness])
+  );
+}
+
+export function sessionMarkerPath(workspaceRoot: string, harness: NativeCliHarness): string {
+  return join(workspaceRoot, HARNESS_CONFIG_DIR_NAMES[harness], PREFERENCE_SUBDIRECTORY, "pr-publish-prompt.json");
 }
 
 export function userPreferencesPath(
+  harness: NativeCliHarness,
   deps: PrPublishPreferenceDeps = defaultPrPublishPreferenceDeps,
 ): string {
-  return join(deps.homedir(), ...USER_PREFERENCES_RELATIVE_SEGMENTS);
+  return join(harnessHomeDir(harness, deps), PREFERENCE_SUBDIRECTORY, "preferences.json");
 }
 
 /**
@@ -71,6 +110,7 @@ async function writeJson(path: string, value: Record<string, unknown>): Promise<
 
 export interface CheckPrPublishPreferenceInput {
   readonly workspaceRoot: string;
+  readonly harness: NativeCliHarness;
 }
 
 export interface CheckPrPublishPreferenceResult {
@@ -83,11 +123,11 @@ export async function checkPrPublishPreference(
   input: CheckPrPublishPreferenceInput,
   deps: PrPublishPreferenceDeps = defaultPrPublishPreferenceDeps,
 ): Promise<CheckPrPublishPreferenceResult> {
-  const session = await readJsonTolerant(sessionMarkerPath(input.workspaceRoot));
+  const session = await readJsonTolerant(sessionMarkerPath(input.workspaceRoot, input.harness));
   if (session?.skip === true) {
     return { skipScope: "session" };
   }
-  const user = await readJsonTolerant(userPreferencesPath(deps));
+  const user = await readJsonTolerant(userPreferencesPath(input.harness, deps));
   if (user?.prPublishPromptSkip === true) {
     return { skipScope: "user" };
   }
@@ -96,6 +136,7 @@ export async function checkPrPublishPreference(
 
 export interface RecordPrPublishPreferenceInput {
   readonly workspaceRoot: string;
+  readonly harness: NativeCliHarness;
   readonly scope: PrPublishPreferenceScope;
 }
 
@@ -104,8 +145,8 @@ export async function recordPrPublishPreference(
   deps: PrPublishPreferenceDeps = defaultPrPublishPreferenceDeps,
 ): Promise<void> {
   if (input.scope === "session") {
-    await writeJson(sessionMarkerPath(input.workspaceRoot), { skip: true });
+    await writeJson(sessionMarkerPath(input.workspaceRoot, input.harness), { skip: true });
     return;
   }
-  await writeJson(userPreferencesPath(deps), { prPublishPromptSkip: true });
+  await writeJson(userPreferencesPath(input.harness, deps), { prPublishPromptSkip: true });
 }

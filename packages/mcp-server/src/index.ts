@@ -29,6 +29,7 @@ import {
   FULL_FIDELITY_PUBLISH_PROMPT_CHECKLIST,
   FULL_FIDELITY_PUBLISH_TOOL_DESCRIPTION,
   NATIVE_HARNESSES,
+  NATIVE_CLI_HARNESSES,
   computePublicationKey,
   type AudiencePolicy,
   type PublicationExpirationChoice,
@@ -778,15 +779,18 @@ export function createServer(
         "Manages the developer's durable opt-out for the PR-publish prompt (\"attach a share card before creating a PR\"). " +
         "Call action \"check\" before ever showing the 4-choice prompt: if skipScope is \"session\" or \"user\", do not prompt. " +
         "Call action \"record\" only after the developer explicitly chooses to stop being asked, with scope \"session\" for \"don't ask this session\" or \"user\" for \"don't ask ever\". " +
-        "Never call \"record\" on a plain \"No\" answer -- that only skips the card for this one PR, not future prompts.",
+        "Never call \"record\" on a plain \"No\" answer -- that only skips the card for this one PR, not future prompts. " +
+        "The flag is stored inside the current harness's own config directory (.copilot, .claude, .codex), not a separate Session Registry folder, so each harness's opt-out is independent.",
       inputSchema: z.discriminatedUnion("action", [
         z.object({
           action: z.literal("check"),
           workspaceRoot: z.string().min(1).describe("Absolute path to the current workspace/worktree root, used to locate the session-scoped marker file."),
+          harness: z.enum(NATIVE_CLI_HARNESSES).describe("The CLI harness currently running, which selects whose config directory (.copilot/.claude/.codex) backs the flag."),
         }).strict(),
         z.object({
           action: z.literal("record"),
           workspaceRoot: z.string().min(1).describe("Absolute path to the current workspace/worktree root, used to locate the session-scoped marker file."),
+          harness: z.enum(NATIVE_CLI_HARNESSES).describe("The CLI harness currently running, which selects whose config directory (.copilot/.claude/.codex) backs the flag."),
           scope: z.enum(["session", "user"]).describe("\"session\" persists only for this worktree; \"user\" persists across every workspace for this developer."),
         }).strict(),
       ]),
