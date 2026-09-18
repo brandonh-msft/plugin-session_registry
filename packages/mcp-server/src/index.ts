@@ -777,21 +777,39 @@ export function createServer(
       title: "Check or record the PR-publish-prompt preference",
       description:
         "Manages the developer's durable opt-out for the PR-publish prompt (\"attach a share card before creating a PR\"). " +
-        "Call action \"check\" before ever showing the 4-choice prompt: if skipScope is \"session\" or \"user\", do not prompt. " +
-        "Call action \"record\" only after the developer explicitly chooses to stop being asked, with scope \"session\" for \"don't ask this session\" or \"user\" for \"don't ask ever\". " +
+        "Requests are strict: send only the fields shown for the selected action. " +
+        "For check, send exactly {\"action\":\"check\",\"workspaceRoot\":\"<absolute-path>\",\"harness\":\"github-copilot-cli\"}; check takes only workspaceRoot and harness. Do not send skipScope -- it is response-only. " +
+        "For record, send exactly {\"action\":\"record\",\"workspaceRoot\":\"<absolute-path>\",\"harness\":\"github-copilot-cli\",\"scope\":\"session\"}; record additionally requires scope, using \"session\" for \"don't ask this session\" or \"user\" for \"don't ask ever\". " +
+        "The harness must be exactly one of \"github-copilot-cli\", \"claude-code\", or \"codex-cli\". " +
+        "Call action \"check\" before ever showing the 4-choice prompt: if the response skipScope is \"session\" or \"user\", do not prompt. " +
+        "Call action \"record\" only after the developer explicitly chooses to stop being asked. " +
         "Never call \"record\" on a plain \"No\" answer -- that only skips the card for this one PR, not future prompts. " +
         "The flag is stored inside the current harness's own config directory (.copilot, .claude, .codex), not a separate Session Registry folder, so each harness's opt-out is independent.",
       inputSchema: z.discriminatedUnion("action", [
         z.object({
-          action: z.literal("check"),
-          workspaceRoot: z.string().min(1).describe("Absolute path to the current workspace/worktree root, used to locate the session-scoped marker file."),
-          harness: z.enum(NATIVE_CLI_HARNESSES).describe("The CLI harness currently running, which selects whose config directory (.copilot/.claude/.codex) backs the flag."),
+          action: z.literal("check").describe(
+            "Check the current preference. This request accepts only action, workspaceRoot, and harness; skipScope is returned in the response and must not be sent.",
+          ),
+          workspaceRoot: z.string().min(1).describe(
+            "Absolute path to the current workspace/worktree root. Example check request: {\"action\":\"check\",\"workspaceRoot\":\"<absolute-path>\",\"harness\":\"github-copilot-cli\"}.",
+          ),
+          harness: z.enum(NATIVE_CLI_HARNESSES).describe(
+            "Exact CLI harness literal: \"github-copilot-cli\", \"claude-code\", or \"codex-cli\".",
+          ),
         }).strict(),
         z.object({
-          action: z.literal("record"),
-          workspaceRoot: z.string().min(1).describe("Absolute path to the current workspace/worktree root, used to locate the session-scoped marker file."),
-          harness: z.enum(NATIVE_CLI_HARNESSES).describe("The CLI harness currently running, which selects whose config directory (.copilot/.claude/.codex) backs the flag."),
-          scope: z.enum(["session", "user"]).describe("\"session\" persists only for this worktree; \"user\" persists across every workspace for this developer."),
+          action: z.literal("record").describe(
+            "Record an explicit stop-asking choice. This request requires action, workspaceRoot, harness, and scope.",
+          ),
+          workspaceRoot: z.string().min(1).describe(
+            "Absolute path to the current workspace/worktree root. Example record request: {\"action\":\"record\",\"workspaceRoot\":\"<absolute-path>\",\"harness\":\"github-copilot-cli\",\"scope\":\"session\"}.",
+          ),
+          harness: z.enum(NATIVE_CLI_HARNESSES).describe(
+            "Exact CLI harness literal: \"github-copilot-cli\", \"claude-code\", or \"codex-cli\".",
+          ),
+          scope: z.enum(["session", "user"]).describe(
+            "Required for record only: \"session\" persists for this worktree; \"user\" persists across every workspace for this developer.",
+          ),
         }).strict(),
       ]),
     },
