@@ -14,6 +14,7 @@ import {
   type NativeSessionBundleEntry,
 } from "./nativeSessionBundleReader.js";
 import { NATIVE_SESSION_BUNDLE_MANIFEST_PATH } from "./nativeSessionBundle.js";
+import { SESSION_MANIFEST_PATH } from "./sessionManifest.js";
 import { parseImportJson } from "./jsonPrecision.js";
 
 const MANIFEST_FORMAT = "session-registry/native-bundle/1";
@@ -233,7 +234,14 @@ export function validateImportManifest(
     throw new ImportError("IMPORT_MANIFEST_MISSING", "this V2 bundle predates verifiable manifests; re-download or ask the owner to republish it.");
   }
   const manifest = parseManifest(parseImportJson(new TextDecoder().decode(manifestEntry.bytes)));
-  const nonManifest = [...entries.values()].filter((entry) => entry.path !== NATIVE_SESSION_BUNDLE_MANIFEST_PATH);
+  // `manifest.json` (SESSION_MANIFEST_PATH) is share-page display metadata
+  // that apps/web injects into the downloaded ZIP at serve time, after the
+  // approved-file hash chain below was already computed at capture time. It
+  // is never part of `approvedFiles` and must not trip the unexpected-entry
+  // check the same way an unapproved/tampered file would.
+  const nonManifest = [...entries.values()].filter(
+    (entry) => entry.path !== NATIVE_SESSION_BUNDLE_MANIFEST_PATH && entry.path !== SESSION_MANIFEST_PATH,
+  );
   const byKey = new Map<string, NativeSessionBundleEntry>();
   for (const entry of nonManifest) {
     const key = pathKey(entry.path);

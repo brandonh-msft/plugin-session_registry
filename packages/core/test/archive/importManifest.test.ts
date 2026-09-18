@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { validateImportManifest } from "../../src/archive/importManifest.js";
 import { ImportError } from "../../src/archive/importErrors.js";
 import { NATIVE_SESSION_BUNDLE_MANIFEST_PATH, buildNativeSessionBundle } from "../../src/archive/nativeSessionBundle.js";
+import { SESSION_MANIFEST_PATH, buildSessionManifestBytes } from "../../src/archive/sessionManifest.js";
 import { readNativeSessionBundle, type NativeSessionBundleEntry } from "../../src/archive/nativeSessionBundleReader.js";
 import { nativeV3ArchiveFixture } from "./nativeSessionArchive.fixture.js";
 
@@ -99,6 +100,25 @@ describe("validateImportManifest", () => {
       const files = manifest.approvedFiles as Array<Record<string, unknown>>;
       manifest.approvedFiles = [files[0], { ...files[0] }];
     }), "IMPORT_ENTRY_MISMATCH", "duplicate manifest entry");
+  });
+
+  it("accepts the share-page manifest.json entry without requiring it in approvedFiles", async () => {
+    const entries = new Map(await validEntries());
+    entries.set(SESSION_MANIFEST_PATH, {
+      path: SESSION_MANIFEST_PATH,
+      bytes: buildSessionManifestBytes({
+        sessionId: "sess_123",
+        harnessSessionId: "harness-abc",
+        title: "Example",
+        summary: "Example summary",
+        harness: { name: "github-copilot-cli", version: "1.2.3" },
+        capturedAt: "2026-09-10T10:01:00.000Z",
+        ownerGithubLogin: "octocat",
+      }),
+    });
+    const result = validateImportManifest(entries);
+    expect(result.files).toHaveLength(1);
+    expect(result.files.some((file) => file.path === SESSION_MANIFEST_PATH)).toBe(false);
   });
 
   it("verifies byte length, sha256, and contentSha256 independently", async () => {
