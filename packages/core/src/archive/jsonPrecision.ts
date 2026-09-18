@@ -28,8 +28,8 @@ function equivalentDecimal(left: string, right: string): boolean {
   if (a.digits === 0n && b.digits === 0n) return true;
   if (a.sign !== b.sign) return false;
   if (a.scale === b.scale) return a.digits === b.digits;
-  if (a.scale > b.scale) return a.digits * 10n ** BigInt(a.scale - b.scale) === b.digits;
-  return a.digits === b.digits * 10n ** BigInt(b.scale - a.scale);
+  if (a.scale > b.scale) return a.digits === b.digits * 10n ** BigInt(a.scale - b.scale);
+  return a.digits * 10n ** BigInt(b.scale - a.scale) === b.digits;
 }
 
 function validateNumberLiteral(literal: string): void {

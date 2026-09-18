@@ -8,9 +8,10 @@ import { ImportError } from "../../src/archive/importErrors.js";
 
 describe("import JSON precision", () => {
   it("accepts safe integers and exactly representable decimal round trips", () => {
-    expect(parseImportJson('{"count":9007199254740991,"ratio":0.1}')).toEqual({
+    expect(parseImportJson('{"count":9007199254740991,"ratio":0.1,"capturedAt":1789533458385.0}')).toEqual({
       count: 9007199254740991,
       ratio: 0.1,
+      capturedAt: 1789533458385,
     });
   });
 
