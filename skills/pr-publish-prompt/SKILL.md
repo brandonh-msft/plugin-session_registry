@@ -20,7 +20,17 @@ Do **not** invoke this skill for read-only PR/MR operations (viewing, listing, c
 
 ## Phase 1: Check the Preference — Always First
 
-Before ever showing the prompt, call the `pr_publish_preference` MCP tool with `action: "check"`, the current workspace/worktree root as `workspaceRoot`, and `harness` set to whichever CLI harness you are running as (`github-copilot-cli`, `claude-code`, or `codex-cli`). The flag lives inside that harness's own config directory (`.copilot`, `.claude`, or `.codex`) rather than a separate Session Registry folder, so pick the value that matches your own identity.
+Before ever showing the prompt, call the `pr_publish_preference` MCP tool with exactly this request shape:
+
+```json
+{
+  "action": "check",
+  "workspaceRoot": "<absolute-path-to-current-workspace-or-worktree-root>",
+  "harness": "github-copilot-cli"
+}
+```
+
+Set `harness` to the exact literal for the CLI harness you are running as: `github-copilot-cli`, `claude-code`, or `codex-cli`. The `check` request accepts only `action`, `workspaceRoot`, and `harness`. Do **not** send `skipScope`; that field appears only in the tool's response. The flag lives inside that harness's own config directory (`.copilot`, `.claude`, or `.codex`) rather than a separate Session Registry folder, so pick the value that matches your own identity.
 
 - If `skipScope` is `"session"` or `"user"`, **do not prompt**. Proceed directly to creating the PR/MR exactly as you otherwise would, with no card.
 - If `skipScope` is `"none"`, continue to Phase 2.
@@ -42,8 +52,8 @@ Do not reword these into a yes/no question, and do not embed the choices in the 
 
 - **Yes, attach a share card**: Run `/publish-session` (the `publish-session` skill) if the session is not already published, or reuse its existing `linkId` if it is. Fully carry out the invoked `publish-session` skill's own documented procedure, including its documented retries for retriable errors: retry `UNSUPPORTED_DEPENDENCY`/`MISSING_DEPENDENCY` by copying the exact authorized paths from the error into `dependencyPaths` or `dependencyMappings`, and retry `PUBLISH_STATE_UNKNOWN`, network timeout, or equivalent unknown-outcome errors with the same `captureId` and confirmed request values. A retriable error on the first publish attempt is **not** permission to abandon publication or silently proceed as though the developer chose "No, not this time." After publication returns a `linkId`, call `get_share_card` with that `linkId`. If the result is `{ "kind": "available", markdown }`, embed `markdown` directly into the `body`/`--body` argument of the PR-creating call/command you are about to issue — append it, do not replace any body content the developer or you already drafted. If the card is not currently available, tell the developer why and proceed with PR creation as normal, without a card; "not currently available" means publication was carried through to a genuine terminal outcome such as `{ "kind": "unavailable" }` from `get_share_card`, or a real non-retriable/unrecoverable publish failure that the `publish-session` skill itself would surface as final. If publication still cannot complete after those documented retries, tell the developer the final reason before creating the PR without a card. Do **not** call `pr_publish_preference` with `action: "record"` for this answer — a one-time "Yes" is not a durable preference.
 - **No, not this time**: Proceed with PR creation unchanged. Do not call `record`.
-- **No, and don't ask again this session**: Call `pr_publish_preference` with `action: "record"`, `harness`, and `scope: "session"`, then proceed with PR creation unchanged.
-- **No, and don't ask again ever**: Call `pr_publish_preference` with `action: "record"`, `harness`, and `scope: "user"`, then proceed with PR creation unchanged.
+- **No, and don't ask again this session**: Call `pr_publish_preference` with exactly `{"action":"record","workspaceRoot":"<absolute-path-to-current-workspace-or-worktree-root>","harness":"<github-copilot-cli|claude-code|codex-cli>","scope":"session"}`, then proceed with PR creation unchanged.
+- **No, and don't ask again ever**: Call `pr_publish_preference` with exactly `{"action":"record","workspaceRoot":"<absolute-path-to-current-workspace-or-worktree-root>","harness":"<github-copilot-cli|claude-code|codex-cli>","scope":"user"}`, then proceed with PR creation unchanged.
 
 In every case, the PR/MR is still created — this skill only ever adds a card to a request the developer is already asking you to open; it never blocks or delays PR creation on its own account.
 
