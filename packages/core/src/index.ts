@@ -8,4 +8,5 @@ export * from "./archive/nativeSessionArchive.js";
 export * from "./archive/nativeSessionBundle.js";
 export * from "./archive/importErrors.js";
 export * from "./archive/importContracts.js";
+export * from "./archive/nativeSessionBundleReader.js";
 export * from "./contracts/fullFidelityPublicationContract.js";
