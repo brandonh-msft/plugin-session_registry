@@ -1,6 +1,7 @@
 ---
 name: pr-publish-prompt
 description: Before creating a pull/merge request on any git host, offer once to attach a PR-Ready Share Card for the current session, respecting a durable per-scope opt-out.
+user-invocable: false
 ---
 
 # `pr-publish-prompt` Agentic Skill
