@@ -52,6 +52,12 @@ export interface Session {
    * and every foreign key keeps pointing at the stable `id`.
    */
   readonly harnessSessionId: string;
+  /**
+   * Stable publish-attempt key for one owner/harness-session snapshot.
+   * Reusing the same key amends the previous snapshot; a different key keeps
+   * prior snapshots independent.
+   */
+  readonly publicationKey: string | null;
   readonly createdAt: Date;
   /** Owner-confirmed title, <=120 chars (SUMMARY-R48-R50). */
   readonly title: string;
@@ -85,12 +91,15 @@ export interface Session {
 
 export type NewSessionInput = Omit<
   Session,
-  "id" | "createdAt" | "contentBlocked" | "supersededAt"
->;
+  "id" | "createdAt" | "contentBlocked" | "supersededAt" | "publicationKey"
+> & {
+  readonly publicationKey?: string | null;
+};
 
 const MAX_TITLE_LENGTH = 120;
 const MAX_SUMMARY_LENGTH = 500;
 const MAX_HARNESS_SESSION_ID_LENGTH = 128;
+const MAX_PUBLICATION_KEY_LENGTH = 256;
 
 /**
  * Harness session ids are placed verbatim into a public URL path segment,
@@ -159,10 +168,20 @@ export function createSession(
 ): Session {
   const now = deps.now ?? (() => new Date());
   const generateId = deps.generateId ?? defaultGenerateId;
+  const publicationKey = input.publicationKey ?? null;
 
   if (!isValidHarnessSessionId(input.harnessSessionId)) {
     throw new InvalidSessionInputError(
       `harnessSessionId must be 1-${MAX_HARNESS_SESSION_ID_LENGTH} URL-safe chars matching ${HARNESS_SESSION_ID_PATTERN.source}`,
+    );
+  }
+  if (
+    publicationKey !== null &&
+    (publicationKey.length === 0 ||
+      publicationKey.length > MAX_PUBLICATION_KEY_LENGTH)
+  ) {
+    throw new InvalidSessionInputError(
+      `publicationKey must be null or 1-${MAX_PUBLICATION_KEY_LENGTH} chars`,
     );
   }
   if (input.title.length === 0 || input.title.length > MAX_TITLE_LENGTH) {
@@ -198,6 +217,7 @@ export function createSession(
 
   return {
     ...input,
+    publicationKey,
     id: generateId(),
     createdAt: now(),
     contentBlocked: null,
