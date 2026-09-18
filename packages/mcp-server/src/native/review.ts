@@ -41,6 +41,14 @@ export interface CaptureFinding {
   readonly length: number;
   readonly proposedReplacement: string;
   readonly manualReview?: boolean;
+  /**
+   * A bounded, partially-masked preview of the detected value (e.g.
+   * `ghp_****************************abcd`) so an owner reviewing findings
+   * individually can recognize what was matched. Never the full value, and
+   * never present for `manualReview` findings (their underlying text can be
+   * an entire binary blob or unparsed segment, not a bounded secret).
+   */
+  readonly maskedPreview?: string;
 }
 
 interface ReviewTarget {
@@ -85,11 +93,31 @@ function encodeFragment(value: string, depth: number): string {
   return value;
 }
 
+/**
+ * Reveals a few characters at the start/end of a detected value and masks
+ * the rest with `*`, so an owner can recognize a finding without ever seeing
+ * enough of it to reconstruct the secret. Whitespace/control characters are
+ * collapsed to a single space first so multi-line values (e.g. PEM keys)
+ * can't leak their structure through the preview. Values of 4 characters or
+ * fewer are fully masked (no reveal) since any partial reveal of something
+ * that short would expose most or all of it.
+ */
+export function maskFindingPreview(value: string): string {
+  const collapsed = value.replace(/\s+/g, " ");
+  const total = collapsed.length;
+  if (total <= 4) return "*".repeat(total);
+  const reveal = total >= 24 ? 4 : total >= 12 ? 2 : 1;
+  const start = collapsed.slice(0, reveal);
+  const end = collapsed.slice(total - reveal);
+  return `${start}${"*".repeat(total - reveal * 2)}${end}`;
+}
+
 function publicFinding(finding: LocatedFinding): CaptureFinding {
-  const { id, category, severity, source, offset, length, proposedReplacement, manualReview } = finding;
+  const { id, category, severity, source, offset, length, proposedReplacement, manualReview, decodedText } = finding;
   return {
     id, category, severity, source: safeReviewText(source), offset, length, proposedReplacement,
     ...(manualReview ? { manualReview } : {}),
+    ...(manualReview ? {} : { maskedPreview: maskFindingPreview(decodedText) }),
   };
 }
 

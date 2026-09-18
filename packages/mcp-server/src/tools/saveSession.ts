@@ -96,17 +96,39 @@ function parseOwnerRedactions(value: string): OwnerRedaction[] {
 }
 
 /**
+ * A short, safe line rendered under a finding's category/severity/location:
+ * a masked partial preview of the detected value plus its character count,
+ * never the value itself. Absent for manualReview findings.
+ */
+function findingPreviewLine(finding: CaptureFinding): string {
+  return finding.maskedPreview === undefined
+    ? ""
+    : ` Detected value preview: ${finding.maskedPreview} (${finding.length} character${finding.length === 1 ? "" : "s"}).`;
+}
+
+/** Capped so a huge finding set (e.g. dozens of secrets) still renders a short, readable list. */
+const SECRET_LIST_PREVIEW_LIMIT = 10;
+
+/**
  * Step 2 of the deterministic publish flow: a single-field choice, never a
  * multi-field settings form. It always literally reports how many likely
- * secrets the scanner found before asking how to handle them.
+ * secrets the scanner found, with a capped preview list, before asking how
+ * to handle them.
  */
 function secretDecisionForm(
-  input: { readonly captureId: string; readonly harnessSessionId: string; readonly count: number },
+  input: { readonly captureId: string; readonly harnessSessionId: string; readonly pending: readonly CaptureFinding[] },
 ): ElicitRequestFormParams {
+  const { pending } = input;
+  const shown = pending.slice(0, SECRET_LIST_PREVIEW_LIMIT);
+  const remaining = pending.length - shown.length;
+  const list = shown.map((finding, index) =>
+    `  ${index + 1}. [${finding.category}/${finding.severity}] ${finding.source}${findingPreviewLine(finding)}`);
+  if (remaining > 0) list.push(`  ...and ${remaining} more.`);
   return {
     mode: "form",
     message: [
-      `The scanner found ${input.count} likely secret${input.count === 1 ? "" : "s"} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
+      `The scanner found ${pending.length} likely secret${pending.length === 1 ? "" : "s"} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
+      `Detected secrets:\n${list.join("\n")}`,
       "Choose how to handle every detected secret before continuing.",
     ].join("\n\n"),
     requestedSchema: {
@@ -118,7 +140,7 @@ function secretDecisionForm(
           oneOf: [
             { const: "redact-all", title: "Redact all detected secrets" },
             { const: "review-each", title: "Review and approve each detected secret individually" },
-            { const: "publish-unredacted", title: "Publish unredacted (explicit owner override; not blocked)" },
+            { const: "publish-unredacted", title: "Publish unredacted" },
           ],
         },
       },
@@ -136,15 +158,42 @@ function perFindingForm(
     mode: "form",
     message: [
       `Finding ${input.position} of ${input.total} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
-      `Category: ${finding.category}. Severity: ${finding.severity}. Location: ${finding.source}.`,
-      `Proposed replacement if redacted: ${finding.proposedReplacement}`,
+      `Category: ${finding.category}. Severity: ${finding.severity}. Location: ${finding.source}.${findingPreviewLine(finding)}`,
     ].join("\n\n"),
     requestedSchema: {
       type: "object",
       properties: {
-        redact: { type: "boolean", title: "Redact this finding", default: true },
+        decision: {
+          type: "string",
+          title: "Redact this finding",
+          oneOf: [
+            { const: "redact-default", title: "Yes, as [REDACTED]" },
+            { const: "keep", title: "No" },
+            { const: "redact-custom", title: "Yes, as something else (I'll tell you)" },
+          ],
+        },
       },
-      required: ["redact"],
+      required: ["decision"],
+    },
+  };
+}
+
+/** Follow-up step shown only when a finding's decision is "redact-custom". */
+function customReplacementForm(
+  input: { readonly captureId: string; readonly harnessSessionId: string; readonly finding: CaptureFinding; readonly position: number; readonly total: number },
+): ElicitRequestFormParams {
+  return {
+    mode: "form",
+    message: [
+      `Custom replacement for finding ${input.position} of ${input.total} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
+      "Enter the exact text to use instead of this finding's value.",
+    ].join("\n\n"),
+    requestedSchema: {
+      type: "object",
+      properties: {
+        replacementText: { type: "string", title: "Replacement text", minLength: 1 },
+      },
+      required: ["replacementText"],
     },
   };
 }
@@ -256,7 +305,7 @@ async function runSecretDecisionGate(
   ctx: { readonly captureId: string; readonly harnessSessionId: string },
   pending: readonly CaptureFinding[],
 ): Promise<SecretGateOutcome> {
-  const decisionAnswer = await deps.confirm(secretDecisionForm({ ...ctx, count: pending.length }));
+  const decisionAnswer = await deps.confirm(secretDecisionForm({ ...ctx, pending }));
   if (decisionAnswer === undefined) return { kind: "unavailable" };
   if (decisionAnswer.action !== "accept") return { kind: "cancelled" };
   const decision = decisionAnswer.content?.decision;
@@ -271,14 +320,31 @@ async function runSecretDecisionGate(
   }
   const resolutions: CaptureResolution[] = [];
   for (const finding of pending) {
-    const answer = await deps.confirm(perFindingForm({ ...ctx, finding, position: resolutions.length + 1, total: pending.length }));
+    const position = resolutions.length + 1;
+    const answer = await deps.confirm(perFindingForm({ ...ctx, finding, position, total: pending.length }));
     if (answer === undefined) return { kind: "unavailable" };
     if (answer.action !== "accept") return { kind: "cancelled" };
-    const redact = answer.content?.redact;
-    if (typeof redact !== "boolean") {
-      throw new NativeCaptureError("INVALID_CONFIRMATION", "Answer whether to redact this finding.");
+    const findingDecision = answer.content?.decision;
+    if (findingDecision === "redact-default") {
+      resolutions.push({ findingId: finding.id, action: { kind: "accept-redaction" } });
+    } else if (findingDecision === "keep") {
+      resolutions.push({ findingId: finding.id, action: { kind: "owner-override-unredacted" } });
+    } else if (findingDecision === "redact-custom") {
+      const customAnswer = await deps.confirm(customReplacementForm({ ...ctx, finding, position, total: pending.length }));
+      if (customAnswer === undefined) return { kind: "unavailable" };
+      if (customAnswer.action !== "accept") return { kind: "cancelled" };
+      const replacementText = typeof customAnswer.content?.replacementText === "string"
+        ? customAnswer.content.replacementText.trim() : "";
+      if (!replacementText) {
+        throw new NativeCaptureError(
+          "INVALID_CONFIRMATION",
+          'Enter replacement text for this finding, or go back and choose "Yes, as [REDACTED]" or "No" instead.',
+        );
+      }
+      resolutions.push({ findingId: finding.id, action: { kind: "custom-replacement", replacementText } });
+    } else {
+      throw new NativeCaptureError("INVALID_CONFIRMATION", "Choose one of the three options for this finding.");
     }
-    resolutions.push({ findingId: finding.id, action: { kind: redact ? "accept-redaction" : "owner-override-unredacted" } });
   }
   return { kind: "resolved", decision, resolutions };
 }

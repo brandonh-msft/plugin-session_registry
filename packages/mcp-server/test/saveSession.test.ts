@@ -271,6 +271,111 @@ describe("save-session MCP workflow", () => {
     } finally { await run.close(); }
   });
 
+  it("redacts a single finding with the default placeholder via review-each, showing a masked preview", async () => {
+    let calls = 0;
+    const run = await setup("github-copilot-cli", (request) => {
+      calls++;
+      if (calls === 1) return { action: "accept", content: { decision: "review-each" } };
+      if (calls === 2) return { action: "accept", content: { decision: "redact-default" } };
+      return accepted(request);
+    });
+    const token = `ghp_${"x".repeat(36)}`;
+    await appendFile(run.fixture.primary, JSON.stringify({ type: "assistant.message", data: { content: `Token ${token}.` } }) + "\n");
+    try {
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      expect(result.isError).not.toBe(true);
+      // Secret-decision gate (review-each), the per-finding form, the
+      // metadata form, and the final recap-confirm.
+      expect(run.confirmations).toHaveLength(4);
+      const perFinding = ElicitRequestFormParamsSchema.parse(run.confirmations[1]!.params);
+      expect(perFinding.message).toContain("Detected value preview:");
+      expect(perFinding.message).not.toContain(token);
+      expect(perFinding.message).not.toContain("Proposed replacement");
+      expect(Object.keys(perFinding.requestedSchema.properties)).toEqual(["decision"]);
+      const content = parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.content;
+      expect(content).toContain("[REDACTED]");
+      expect(content).not.toContain(token);
+    } finally { await run.close(); }
+  });
+
+  it("keeps a finding unredacted when the owner chooses No via review-each", async () => {
+    let calls = 0;
+    const run = await setup("github-copilot-cli", (request) => {
+      calls++;
+      if (calls === 1) return { action: "accept", content: { decision: "review-each" } };
+      if (calls === 2) return { action: "accept", content: { decision: "keep" } };
+      return accepted(request);
+    });
+    const token = `ghp_${"x".repeat(36)}`;
+    await appendFile(run.fixture.primary, JSON.stringify({ type: "assistant.message", data: { content: `Token ${token}.` } }) + "\n");
+    try {
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      expect(result.isError).not.toBe(true);
+      expect(run.confirmations).toHaveLength(4);
+      const content = parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.content;
+      expect(content).toContain(token);
+    } finally { await run.close(); }
+  });
+
+  it("redacts a finding with owner-supplied custom text via the redact-custom follow-up form", async () => {
+    let calls = 0;
+    const run = await setup("github-copilot-cli", (request) => {
+      calls++;
+      if (calls === 1) return { action: "accept", content: { decision: "review-each" } };
+      if (calls === 2) return { action: "accept", content: { decision: "redact-custom" } };
+      if (calls === 3) return { action: "accept", content: { replacementText: "[MY-CUSTOM-TEXT]" } };
+      return accepted(request);
+    });
+    const token = `ghp_${"x".repeat(36)}`;
+    await appendFile(run.fixture.primary, JSON.stringify({ type: "assistant.message", data: { content: `Token ${token}.` } }) + "\n");
+    try {
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      expect(result.isError).not.toBe(true);
+      // Secret-decision gate, the per-finding form, the custom-replacement
+      // follow-up form, the metadata form, and the recap-confirm.
+      expect(run.confirmations).toHaveLength(5);
+      const followUp = ElicitRequestFormParamsSchema.parse(run.confirmations[2]!.params);
+      expect(followUp.message).toContain("Custom replacement for finding 1 of 1");
+      expect(Object.keys(followUp.requestedSchema.properties)).toEqual(["replacementText"]);
+      const content = parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.content;
+      expect(content).toContain("[MY-CUSTOM-TEXT]");
+      expect(content).not.toContain(token);
+    } finally { await run.close(); }
+  });
+
+  it("rejects a blank redact-custom replacement instead of silently defaulting", async () => {
+    let calls = 0;
+    const run = await setup("github-copilot-cli", (request) => {
+      calls++;
+      if (calls === 1) return { action: "accept", content: { decision: "review-each" } };
+      if (calls === 2) return { action: "accept", content: { decision: "redact-custom" } };
+      if (calls === 3) return { action: "accept", content: { replacementText: "   " } };
+      return accepted(request);
+    });
+    const token = `ghp_${"x".repeat(36)}`;
+    await appendFile(run.fixture.primary, JSON.stringify({ type: "assistant.message", data: { content: `Token ${token}.` } }) + "\n");
+    try {
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      expect(result.isError).toBe(true);
+      expect(run.submissions).toEqual([]);
+    } finally { await run.close(); }
+  });
+
+  it("caps the itemized preview list in the bulk secret-decision form for large finding sets", async () => {
+    const tokens = Array.from({ length: 12 }, (_, index) => `ghp_${index.toString().padStart(2, "0")}${"x".repeat(34)}`);
+    const run = await setup("github-copilot-cli", accepted);
+    await appendFile(run.fixture.primary, JSON.stringify({ type: "assistant.message", data: { content: tokens.join(" ") } }) + "\n");
+    try {
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      expect(result.isError).not.toBe(true);
+      const decisionForm = ElicitRequestFormParamsSchema.parse(run.confirmations[0]!.params);
+      expect(decisionForm.message).toContain("The scanner found 12 likely secrets");
+      expect(decisionForm.message).toContain("10. [");
+      expect(decisionForm.message).not.toContain("11. [");
+      expect(decisionForm.message).toContain("...and 2 more.");
+    } finally { await run.close(); }
+  });
+
   it("parses multiple plain-text redaction lines without requiring JSON", async () => {
     let calls = 0;
     const run = await setup("github-copilot-cli", (request) => {
@@ -404,15 +509,19 @@ describe("save-session MCP workflow", () => {
   });
 
   it("blocks newly introduced metadata secrets instead of publishing the accepted form", async () => {
+    const secret = `ghp_${"x".repeat(36)}`;
     const run = await setup("github-copilot-cli", (request) => ({ action: "accept", content: {
-      ...accepted(request).content, summary: `token ghp_${"x".repeat(36)}`,
+      ...accepted(request).content, summary: `token ${secret}`,
     } }));
     try {
       const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
       expect(result.content[0]).toMatchObject({ text: expect.stringContaining('"status":"review-required"') });
       expect(run.submissions).toEqual([]);
       expect(run.confirmations).toHaveLength(1);
-      expect(JSON.stringify(result)).not.toContain("ghp_");
+      // The full secret must never appear verbatim; only a masked partial
+      // preview (a handful of chars at each end) is allowed to surface.
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(JSON.stringify(result)).toContain("maskedPreview");
     } finally { await run.close(); }
   });
 

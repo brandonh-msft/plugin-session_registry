@@ -9,6 +9,7 @@ import {
 } from "@session-registry/core";
 import {
   CaptureReviewRequiredError,
+  maskFindingPreview,
   resolveNativeCapture as resolveCapture,
   resolveReviewedFindings,
   scanNativeCapture as scanCapture,
@@ -112,8 +113,16 @@ describe("owner-controlled native security review", () => {
     const findings = scanNativeCapture(original, seed);
     expect(findings).toHaveLength(1);
     expect(JSON.stringify(findings)).not.toContain(token);
+    expect(findings[0]?.maskedPreview).toBe(`ghp_${"*".repeat(32)}xxxx`);
     expect(original.files[0]?.content).toContain(token);
     expect(() => resolveNativeCapture(original, seed, [], metadata)).toThrow(CaptureReviewRequiredError);
+  });
+
+  it("masks manualReview findings out of the public shape entirely", () => {
+    const original = archive('{"type":"event","content":"inspectable fixture"}\n');
+    const unscannable = scanCapture(original, seed).filter(({ category }) => category === "unscannable-native-bundle");
+    expect(unscannable.length).toBeGreaterThan(0);
+    for (const finding of unscannable) expect(finding.maskedPreview).toBeUndefined();
   });
 
   it("applies only the accepted security span and keeps the owner-only original intact", () => {
@@ -528,5 +537,34 @@ describe("owner-controlled native security review", () => {
     expect(parseNativeSessionArchive(approved.content)).toEqual(approved.archive);
     expect(hasNativeSessionBundle(approved.archive)).toBe(true);
     expect(buildNativeSessionBundle(approved.archive)).toEqual(buildNativeSessionBundle(expected));
+  });
+});
+
+describe("maskFindingPreview", () => {
+  it("fully masks values of 4 characters or fewer with no reveal", () => {
+    expect(maskFindingPreview("")).toBe("");
+    expect(maskFindingPreview("a")).toBe("*");
+    expect(maskFindingPreview("ab12")).toBe("****");
+  });
+
+  it("reveals 1 character at each end for short (5-11 char) values", () => {
+    expect(maskFindingPreview("secret")).toBe(`s${"*".repeat(4)}t`);
+  });
+
+  it("reveals 2 characters at each end for medium (12-23 char) values", () => {
+    const value = "a".repeat(12);
+    expect(maskFindingPreview(value)).toBe(`aa${"*".repeat(8)}aa`);
+  });
+
+  it("reveals 4 characters at each end for long (24+ char) values", () => {
+    const token = `ghp_${"x".repeat(36)}`;
+    expect(maskFindingPreview(token)).toBe(`ghp_${"*".repeat(32)}xxxx`);
+  });
+
+  it("collapses whitespace/control characters so multi-line structure never leaks", () => {
+    const pem = "-----BEGIN KEY-----\nMIIBaAAA\nBBBB\n-----END KEY-----";
+    const preview = maskFindingPreview(pem);
+    expect(preview).not.toContain("\n");
+    expect(preview.length).toBe(pem.replace(/\s+/g, " ").length);
   });
 });

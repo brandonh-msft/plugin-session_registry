@@ -103,12 +103,17 @@ The MCP server must:
 
 Once artifacts are gathered and scanned, the server drives a fixed, non-negotiable sequence in interactive mode. None of these steps can be skipped, merged, reordered, auto-approved, or inferred from the original publish request, regardless of how the agent or user phrases it:
 
-1. **Secret decision gate.** If any scanner findings are unresolved, the owner must make one explicit choice before anything else happens:
+1. **Secret decision gate.** If any scanner findings are unresolved, the owner must make one explicit choice before anything else happens. The bulk-decision form itself always lists a capped preview of the detected findings (category, location, and a masked partial preview of each value) so this choice is never made blind, even for large finding sets:
    - Redact all detected secrets.
    - Review and approve each finding individually (a per-finding loop, one decision per finding).
    - Publish unredacted as an explicit override (never assumed, never defaulted).
 
    Never silently redact, ignore, or declare false positives on the owner's behalf. This decision is separate from, and always precedes, the metadata form below.
+
+   **Per-finding review detail.** Each step of the "review and approve individually" loop shows the finding's category, severity, location, and a masked partial preview of the detected value (e.g. `ghp_****************************abcd` plus its character count) — enough to recognize the finding, never enough to reconstruct it. The owner then chooses exactly one of three options:
+   - Redact with the standard `[REDACTED]` placeholder.
+   - Keep the finding unredacted (an explicit owner override for that one finding).
+   - Redact with owner-supplied custom replacement text — choosing this immediately opens one follow-up form asking for that exact replacement text, then continues to the next finding. Blank replacement text is rejected and re-asked rather than silently falling back to `[REDACTED]`.
 
 1. **One-shot metadata form.** Present exactly one confirmation form containing all five fields together, filled in exactly once with no re-presentation on edits:
    - `title` — YOU auto-generate a specific 1-120 character task title from approved conversation content; the form prefills it for owner confirmation/edits. Avoid generic placeholders such as "Saved session" or "Session export".
