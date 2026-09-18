@@ -84,6 +84,14 @@ describe("MCP native capture capabilities", () => {
       expect(await connection.client.getPrompt({ name: PREPARE_PROMPT_NAME })).toEqual(first);
       expect(backend.submissions).toEqual([]);
       const { tools } = await connection.client.listTools();
+      for (const importName of ["import_session_bundle", "read_import_slice", "close_import"]) {
+        const imported = tools.find(({ name }) => name === importName);
+        expect(imported?.inputSchema.additionalProperties).toBe(false);
+        expect(imported?.description.length).toBeGreaterThan(100);
+      }
+      expect(tools.find(({ name }) => name === "import_session_bundle")?.inputSchema.required).toEqual(["bundlePath"]);
+      expect(tools.find(({ name }) => name === "read_import_slice")?.inputSchema.required).toEqual(["importHandle", "filter"]);
+      expect(tools.find(({ name }) => name === "close_import")?.inputSchema.required).toEqual(["importHandle"]);
       const publish = tools.find(({ name }) => name === "publish_session");
       expect(publish?.description).toContain(FULL_FIDELITY_PUBLISH_TOOL_DESCRIPTION);
       expect(publish?.inputSchema.properties).not.toHaveProperty("transcript");
