@@ -1,5 +1,6 @@
 export * from "./models/session.js";
 export * from "./models/audiencePolicy.js";
+export * from "./models/publicationKey.js";
 export * from "./storage/blobTags.js";
 export * from "./scanning/scanner.js";
 export * from "./scanning/resolution.js";

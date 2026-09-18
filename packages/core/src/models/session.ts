@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isValidPublicationKey } from "./publicationKey.js";
 
 /**
  * Session is the immutable, owner-published snapshot of an agent coding
@@ -57,6 +58,13 @@ export interface Session {
   readonly title: string;
   /** Owner-confirmed summary, <=500 chars (SUMMARY-R48-R50). */
   readonly summary: string;
+  /**
+   * Hash of the owner-approved publication settings that determine what is
+   * disclosed and to whom. Current-snapshot lookup and supersession scope
+   * by this key in addition to owner + harness session id, so distinct
+   * publications of the same native session can coexist.
+   */
+  readonly publicationKey: string | null;
   readonly harness: HarnessIdentity;
   readonly transcriptPointer: BlobPointer;
   readonly artifactPointers: readonly BlobPointer[];
@@ -81,11 +89,17 @@ export interface Session {
    * of `BASE-R6`/`R7`/`R41`.
    */
   readonly supersededAt: Date | null;
+  /**
+   * Set when the owner soft-deletes the current snapshot so links stop
+   * resolving it without destroying the immutable row. Unlike content
+   * blocking, this is reversible, but only on the current row.
+   */
+  readonly deletedAt: Date | null;
 }
 
 export type NewSessionInput = Omit<
   Session,
-  "id" | "createdAt" | "contentBlocked" | "supersededAt"
+  "id" | "createdAt" | "contentBlocked" | "supersededAt" | "deletedAt"
 >;
 
 const MAX_TITLE_LENGTH = 120;
@@ -146,6 +160,13 @@ export class InvalidSessionInputError extends Error {
   }
 }
 
+export class InvalidSessionLifecycleTransitionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidSessionLifecycleTransitionError";
+  }
+}
+
 /**
  * Constructs a new Session, generating its id/createdAt and validating that
  * every blob-content field is a genuine pointer rather than inlined
@@ -175,6 +196,14 @@ export function createSession(
       `summary must be 1-${MAX_SUMMARY_LENGTH} chars, got ${input.summary.length}`,
     );
   }
+  if (
+    input.publicationKey !== null &&
+    !isValidPublicationKey(input.publicationKey)
+  ) {
+    throw new InvalidSessionInputError(
+      "publicationKey must be a 64-character lowercase SHA-256 hex digest or null",
+    );
+  }
   if (!isBlobPointer(input.transcriptPointer)) {
     throw new InvalidSessionInputError(
       "transcriptPointer must be a {containerName, blobKey} pointer, not inlined content",
@@ -202,6 +231,7 @@ export function createSession(
     createdAt: now(),
     contentBlocked: null,
     supersededAt: null,
+    deletedAt: null,
   };
 }
 
@@ -249,6 +279,48 @@ export function applyContentBlock(
   };
 }
 
+/**
+ * Soft-deletes the current snapshot so link resolution can fail closed
+ * without erasing the immutable row. Like other lifecycle transitions,
+ * repeating the same transition is a no-op once already in that state,
+ * but only the current (non-superseded) row may be tombstoned.
+ */
+export function tombstoneSession(
+  session: Session,
+  deps: { now?: () => Date } = {},
+): Session {
+  assertCurrentSessionRow(session, "tombstone");
+  if (session.deletedAt !== null) {
+    return session;
+  }
+  const now = deps.now ?? (() => new Date());
+  return { ...session, deletedAt: now() };
+}
+
+/**
+ * Reverses `tombstoneSession` on the current row. Restoring an already-
+ * active snapshot is an idempotent no-op, matching the model's existing
+ * one-way transition style.
+ */
+export function restoreSession(session: Session): Session {
+  if (session.deletedAt === null) {
+    return session;
+  }
+  assertCurrentSessionRow(session, "restore");
+  return { ...session, deletedAt: null };
+}
+
 function defaultGenerateId(): string {
   return `sess_${randomUUID()}`;
+}
+
+function assertCurrentSessionRow(
+  session: Session,
+  action: "tombstone" | "restore",
+): void {
+  if (session.supersededAt !== null) {
+    throw new InvalidSessionLifecycleTransitionError(
+      `Only the current (non-superseded) session row may ${action}; session ${session.id} was superseded at ${session.supersededAt.toISOString()}`,
+    );
+  }
 }
