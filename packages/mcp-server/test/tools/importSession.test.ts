@@ -72,7 +72,7 @@ async function handlers(root: string, confirmation: { readonly action: "accept";
 }
 
 describe("createImportSessionHandlers", () => {
-  it("validates in memory, prompts once with bounded safe metadata, then imports and reports unavailable restore", async () => {
+  it("validates in memory, prompts once with bounded safe metadata, then reports plain next steps", async () => {
     const root = await fixtureRoot();
     const source = await bundleFile(root);
     const { value, confirm } = await handlers(root);
@@ -88,8 +88,14 @@ describe("createImportSessionHandlers", () => {
     expect(prompt).not.toMatch(/publisher/i);
     expect(outcome).toMatchObject({
       status: "imported",
-      restore: { available: false, reason: expect.stringContaining("admission contract") },
+      nextSteps: [
+        expect.stringContaining("Ask questions"),
+        expect.stringContaining("Read a small part"),
+      ],
     });
+    expect(JSON.stringify(outcome)).not.toContain("admission contract");
+    expect(prompt).toContain("ask questions about this session");
+    expect(prompt).not.toContain("Native restore is unavailable");
     expect(typeof outcome.importHandle).toBe("string");
   });
 

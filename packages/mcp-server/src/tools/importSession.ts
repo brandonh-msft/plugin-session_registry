@@ -119,7 +119,7 @@ function importConfirmation(metadata: ReturnType<typeof validateImportManifest>)
         ? "This bundle was security-edited or reports redactions; imported material may differ from its original captured state."
         : "This bundle reports no security edits or redactions.",
       "This is another person's agent state. It may contain instructions or tool-triggering content; reading it has prompt-injection risk comparable to running someone else's code.",
-      "Import is read-only. Native restore is unavailable because no harness admission contract has been validated.",
+      "After import, you can ask questions about this session and read small parts of it.",
     ].join("\n\n"),
     requestedSchema: {
       type: "object",
@@ -211,10 +211,10 @@ export function createImportSessionHandlers(deps: ImportSessionDependencies) {
         status: "imported",
         importHandle: handle.id,
         briefing: importBriefing,
-        restore: {
-          available: false,
-          reason: "Native restore is unavailable because no per-harness admission contract has been validated.",
-        },
+        nextSteps: [
+          "Ask questions about the imported session.",
+          "Read a small part of a file when you need more detail.",
+        ],
       });
     } catch (error) {
       if (handle !== undefined) {
