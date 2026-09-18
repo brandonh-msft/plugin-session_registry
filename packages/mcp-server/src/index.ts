@@ -38,6 +38,14 @@ import {
   type BackendPublishAndShareClient,
 } from "./tools/publishAndShare.js";
 import {
+  deleteSession,
+  type BackendDeleteSessionClient,
+} from "./tools/deleteSession.js";
+import {
+  restoreSession,
+  type BackendRestoreSessionClient,
+} from "./tools/restoreSession.js";
+import {
   createHttpBackendClient,
   PublishStateUnknownError,
 } from "./httpBackendClient.js";
@@ -111,9 +119,16 @@ export interface PublishToolInput {
   readonly expiresAt?: string | null;
 }
 
+type SessionRegistryBackendClient = BackendPublishAndShareClient &
+  BackendDeleteSessionClient &
+  BackendRestoreSessionClient;
+type ServerBackendClient = BackendPublishAndShareClient &
+  Partial<BackendDeleteSessionClient> &
+  Partial<BackendRestoreSessionClient>;
+
 export function createDefaultBackendClient(
   env: NodeJS.ProcessEnv,
-): BackendPublishAndShareClient {
+): SessionRegistryBackendClient {
   const baseUrl = requiredEnvironmentValue(env, "SESSION_REGISTRY_API_URL");
   const token = requiredEnvironmentValue(env, "SESSION_REGISTRY_TOKEN");
   const getAccessToken = async () => token;
@@ -340,7 +355,7 @@ function confirmedRequestKey(input: PublishToolInput): string {
 }
 
 export function createServer(
-  backendClient: BackendPublishAndShareClient = createDefaultBackendClient(
+  backendClient: ServerBackendClient = createDefaultBackendClient(
     process.env,
   ),
   captures: NativeCaptureService = createNativeCaptureService(),
@@ -482,6 +497,81 @@ export function createServer(
     createPublishHandler(backendClient, captures),
   );
 
+  server.registerTool(
+    "delete_session",
+    {
+      title: "Delete published session",
+      description:
+        "Tombstone one previously published session by immutable sessionId. " +
+        "Owner identity comes only from the configured bearer token; only the current publication row can be deleted. " +
+        "Deleting an already tombstoned session succeeds as an idempotent no-op.",
+      inputSchema: z.object({
+        sessionId: z.string().min(1).describe(
+          "Immutable published session id returned by publish_session or save_session.",
+        ),
+      }).strict(),
+    },
+    async (input) => {
+      const result = await deleteSession(input, {
+        backendClient: requireDeleteSessionBackendClient(backendClient),
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              result.outcome === "deleted"
+                ? `Deleted session ${result.sessionId}.`
+                : `Session ${result.sessionId} was already tombstoned.`,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "restore_session",
+    {
+      title: "Restore published session",
+      description:
+        "Restore one previously tombstoned published session by immutable sessionId. " +
+        "Owner identity comes only from the configured bearer token; only the current publication row can be restored. " +
+        "A content-blocked session can be restored but remains inaccessible and reports a distinct outcome.",
+      inputSchema: z.object({
+        sessionId: z.string().min(1).describe(
+          "Immutable published session id returned by publish_session or save_session.",
+        ),
+      }).strict(),
+    },
+    async (input) => {
+      const result = await restoreSession(input, {
+        backendClient: requireRestoreSessionBackendClient(backendClient),
+      });
+      const message =
+        result.outcome === "restored"
+          ? `Restored session ${result.sessionId}.`
+          : result.outcome === "already_active"
+            ? `Session ${result.sessionId} was already active.`
+            : `Restored session ${result.sessionId}, but it remains inaccessible because its content is blocked.`;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: message,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
   server.registerPrompt(
     "prepare_full_fidelity_publish_session",
     {
@@ -507,6 +597,24 @@ export function createServer(
   );
 
   return server;
+}
+
+function requireDeleteSessionBackendClient(
+  backendClient: ServerBackendClient,
+): BackendDeleteSessionClient {
+  if (typeof backendClient.deleteSession !== "function") {
+    throw new Error("delete_session backend client is not configured");
+  }
+  return backendClient as BackendDeleteSessionClient;
+}
+
+function requireRestoreSessionBackendClient(
+  backendClient: ServerBackendClient,
+): BackendRestoreSessionClient {
+  if (typeof backendClient.restoreSession !== "function") {
+    throw new Error("restore_session backend client is not configured");
+  }
+  return backendClient as BackendRestoreSessionClient;
 }
 
 async function main(): Promise<void> {

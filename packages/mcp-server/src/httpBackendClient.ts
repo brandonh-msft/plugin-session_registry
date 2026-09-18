@@ -33,6 +33,22 @@ import type {
   PublishAndShareResult,
   ShareLinkRequest,
 } from "./tools/publishAndShare.js";
+import {
+  DeleteSessionNotCurrentPublicationError,
+  DeleteSessionNotFoundError,
+  DeleteSessionRequestFailedError,
+  DeleteSessionStateUnknownError,
+  type BackendDeleteSessionClient,
+  type DeleteSessionResult,
+} from "./tools/deleteSession.js";
+import {
+  RestoreSessionNotCurrentPublicationError,
+  RestoreSessionNotFoundError,
+  RestoreSessionRequestFailedError,
+  RestoreSessionStateUnknownError,
+  type BackendRestoreSessionClient,
+  type RestoreSessionResult,
+} from "./tools/restoreSession.js";
 
 export interface BlobPointer {
   readonly containerName: string;
@@ -121,12 +137,37 @@ interface PublishAndShareResponseBody {
   readonly error?: string;
 }
 
+interface SessionLifecycleResponseBody {
+  readonly sessionId?: string;
+  readonly outcome?: string;
+  readonly error?: string;
+}
+
+interface JsonResponseLike {
+  readonly status: number;
+  readonly ok: boolean;
+  readonly statusText: string;
+  json(): Promise<unknown>;
+}
+
+type JsonFetch = (
+  input: string,
+  init: {
+    readonly method: string;
+    readonly headers: Record<string, string>;
+    readonly body: string;
+  },
+) => Promise<JsonResponseLike>;
+
 export function createHttpBackendClient(
   options: HttpBackendClientOptions,
-): BackendPublishAndShareClient {
+) : BackendPublishAndShareClient &
+  BackendDeleteSessionClient &
+  BackendRestoreSessionClient {
   const doFetch = options.fetch ?? globalThis.fetch;
   const sleep = options.sleep ?? defaultSleep;
-  const endpoint = `${options.baseUrl.replace(/\/+$/, "")}/api/sessions:publishAndShare`;
+  const baseUrl = options.baseUrl.replace(/\/+$/, "");
+  const publishAndShareEndpoint = `${baseUrl}/api/sessions:publishAndShare`;
 
   return {
     async submitAndCreateLink(
@@ -171,7 +212,7 @@ export function createHttpBackendClient(
           }
         }
         try {
-        response = await doFetch(endpoint, {
+        response = await doFetch(publishAndShareEndpoint, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -247,7 +288,103 @@ export function createHttpBackendClient(
         idempotentReplay: body.idempotentReplay,
       };
     },
+    async deleteSession(sessionId: string): Promise<DeleteSessionResult> {
+      const body = await submitSessionLifecycleRequest(
+        `${baseUrl}/api/sessions/delete`,
+        sessionId,
+        options.getAccessToken,
+        doFetch,
+        DeleteSessionStateUnknownError,
+      );
+      if (body.sessionId !== sessionId) {
+        throw new DeleteSessionStateUnknownError(
+          "response sessionId did not match the requested sessionId",
+        );
+      }
+      if (body.outcome !== "deleted" && body.outcome !== "already_tombstoned") {
+        throw new DeleteSessionStateUnknownError(
+          "response did not include a valid delete outcome",
+        );
+      }
+      return { sessionId: body.sessionId, outcome: body.outcome };
+    },
+    async restoreSession(sessionId: string): Promise<RestoreSessionResult> {
+      const body = await submitSessionLifecycleRequest(
+        `${baseUrl}/api/sessions/restore`,
+        sessionId,
+        options.getAccessToken,
+        doFetch,
+        RestoreSessionStateUnknownError,
+      );
+      if (body.sessionId !== sessionId) {
+        throw new RestoreSessionStateUnknownError(
+          "response sessionId did not match the requested sessionId",
+        );
+      }
+      if (
+        body.outcome !== "restored" &&
+        body.outcome !== "already_active" &&
+        body.outcome !== "restored_but_content_blocked"
+      ) {
+        throw new RestoreSessionStateUnknownError(
+          "response did not include a valid restore outcome",
+        );
+      }
+      return { sessionId: body.sessionId, outcome: body.outcome };
+    },
   };
+}
+
+async function submitSessionLifecycleRequest(
+  endpoint: string,
+  sessionId: string,
+  getAccessToken: HttpBackendClientOptions["getAccessToken"],
+  doFetch: JsonFetch,
+  UnknownError: new (detail: string) => Error,
+): Promise<SessionLifecycleResponseBody> {
+  const token = await getAccessToken();
+  let response: JsonResponseLike;
+  try {
+    response = await doFetch(endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ sessionId }),
+    });
+  } catch (error) {
+    throw new UnknownError(error instanceof Error ? error.message : "request failed");
+  }
+
+  const body = (await response.json().catch(() => ({}))) as SessionLifecycleResponseBody;
+  if (response.status === 404) {
+    if (endpoint.endsWith("/delete")) {
+      throw new DeleteSessionNotFoundError(sessionId);
+    }
+    throw new RestoreSessionNotFoundError(sessionId);
+  }
+  if (response.status === 409) {
+    const detail = body.error ?? response.statusText;
+    if (endpoint.endsWith("/delete")) {
+      throw new DeleteSessionNotCurrentPublicationError(sessionId, detail);
+    }
+    throw new RestoreSessionNotCurrentPublicationError(sessionId, detail);
+  }
+  if (!response.ok) {
+    const detail = body.error ?? response.statusText;
+    if (endpoint.endsWith("/delete")) {
+      throw new DeleteSessionRequestFailedError(response.status, detail);
+    }
+    throw new RestoreSessionRequestFailedError(response.status, detail);
+  }
+  if (typeof body.sessionId !== "string" || typeof body.outcome !== "string") {
+    throw new UnknownError("response did not include sessionId and outcome");
+  }
+  if (body.sessionId.trim().length === 0 || body.outcome.trim().length === 0) {
+    throw new UnknownError("response did not include non-empty sessionId and outcome values");
+  }
+  return body;
 }
 
 function validateShareUrl(value: string, harnessSessionId: string, linkId: string): void {
