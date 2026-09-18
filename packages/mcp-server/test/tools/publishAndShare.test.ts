@@ -16,6 +16,7 @@ function makeInput(overrides: Partial<PublishAndShareInput> = {}): PublishAndSha
     transcript: "hello world, nothing sensitive here",
     artifacts: [],
     harness: { name: "test-harness", version: "1.0.0" },
+    publicationKey: "publication-key-1",
     share: { audiencePolicy: { accessMode: "anonymous" } },
     idempotencyKey: "confirm-token-1",
     ...overrides,
@@ -112,6 +113,29 @@ describe("publishAndShareSession", () => {
     expect(capturedExpiresAt).toEqual(
       new Date(now.getTime() + DEFAULT_SHARE_LINK_EXPIRATION_DAYS * 24 * 60 * 60 * 1000),
     );
+  });
+
+  it("threads the publication key to the backend unchanged", async () => {
+    let capturedPublicationKey: string | undefined;
+    const client: BackendPublishAndShareClient = {
+      async submitAndCreateLink(_submission, _share, _idempotencyKey, publicationKey) {
+        capturedPublicationKey = publicationKey;
+        return {
+          sessionId: "session-1",
+          harnessSessionId: "hs1",
+          linkId: "link-1",
+          shareUrl: "https://registry.example.com/session/hs1/link-1",
+          idempotentReplay: false,
+        };
+      },
+    };
+
+    await publishAndShareSession(
+      makeInput({ publicationKey: "publication-key-forwarded" }),
+      baseDeps({ backendClient: client, interactive: true, resolveInteractively: vi.fn() }),
+    );
+
+    expect(capturedPublicationKey).toBe("publication-key-forwarded");
   });
 
   it("happy path: authenticated access mode with a valid audience policy produces a correctly scoped link", async () => {

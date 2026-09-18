@@ -151,7 +151,14 @@ Expected share URL shape:
 
 ## Phase 6: Share Output
 
-On success, return this concise result:
+On success, return this concise result. Every bracketed placeholder below —
+`<harnessSessionId>`, `<shareUrl>`, `<linkId>`, etc. — MUST be copied
+character-for-character from the tool result JSON. Do not retype,
+reformat, summarize, truncate, or reconstruct these values from memory:
+copy/paste each value verbatim, exactly as it appears in the JSON field of
+the same name. This matters most for `shareUrl`, which is a long opaque
+URL — never assemble or approximate it by combining fragments of other
+IDs; always use the literal `shareUrl` string from the tool result.
 
 ```markdown
 ### Agent Session Published

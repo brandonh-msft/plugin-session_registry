@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isValidPublicationKey } from "./publicationKey.js";
 
 /**
  * Session is the immutable, owner-published snapshot of an agent coding
@@ -52,17 +53,18 @@ export interface Session {
    * and every foreign key keeps pointing at the stable `id`.
    */
   readonly harnessSessionId: string;
-  /**
-   * Stable publish-attempt key for one owner/harness-session snapshot.
-   * Reusing the same key amends the previous snapshot; a different key keeps
-   * prior snapshots independent.
-   */
-  readonly publicationKey: string | null;
   readonly createdAt: Date;
   /** Owner-confirmed title, <=120 chars (SUMMARY-R48-R50). */
   readonly title: string;
   /** Owner-confirmed summary, <=500 chars (SUMMARY-R48-R50). */
   readonly summary: string;
+  /**
+   * Hash of the owner-approved publication settings that determine what is
+   * disclosed and to whom. Current-snapshot lookup and supersession scope
+   * by this key in addition to owner + harness session id, so distinct
+   * publications of the same native session can coexist.
+   */
+  readonly publicationKey: string | null;
   readonly harness: HarnessIdentity;
   readonly transcriptPointer: BlobPointer;
   readonly artifactPointers: readonly BlobPointer[];
@@ -87,19 +89,22 @@ export interface Session {
    * of `BASE-R6`/`R7`/`R41`.
    */
   readonly supersededAt: Date | null;
+  /**
+   * Set when the owner soft-deletes the current snapshot so links stop
+   * resolving it without destroying the immutable row. Unlike content
+   * blocking, this is reversible, but only on the current row.
+   */
+  readonly deletedAt: Date | null;
 }
 
 export type NewSessionInput = Omit<
   Session,
-  "id" | "createdAt" | "contentBlocked" | "supersededAt" | "publicationKey"
-> & {
-  readonly publicationKey?: string | null;
-};
+  "id" | "createdAt" | "contentBlocked" | "supersededAt" | "deletedAt"
+>;
 
 const MAX_TITLE_LENGTH = 120;
 const MAX_SUMMARY_LENGTH = 500;
 const MAX_HARNESS_SESSION_ID_LENGTH = 128;
-const MAX_PUBLICATION_KEY_LENGTH = 256;
 
 /**
  * Harness session ids are placed verbatim into a public URL path segment,
@@ -155,6 +160,13 @@ export class InvalidSessionInputError extends Error {
   }
 }
 
+export class InvalidSessionLifecycleTransitionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidSessionLifecycleTransitionError";
+  }
+}
+
 /**
  * Constructs a new Session, generating its id/createdAt and validating that
  * every blob-content field is a genuine pointer rather than inlined
@@ -168,20 +180,10 @@ export function createSession(
 ): Session {
   const now = deps.now ?? (() => new Date());
   const generateId = deps.generateId ?? defaultGenerateId;
-  const publicationKey = input.publicationKey ?? null;
 
   if (!isValidHarnessSessionId(input.harnessSessionId)) {
     throw new InvalidSessionInputError(
       `harnessSessionId must be 1-${MAX_HARNESS_SESSION_ID_LENGTH} URL-safe chars matching ${HARNESS_SESSION_ID_PATTERN.source}`,
-    );
-  }
-  if (
-    publicationKey !== null &&
-    (publicationKey.length === 0 ||
-      publicationKey.length > MAX_PUBLICATION_KEY_LENGTH)
-  ) {
-    throw new InvalidSessionInputError(
-      `publicationKey must be null or 1-${MAX_PUBLICATION_KEY_LENGTH} chars`,
     );
   }
   if (input.title.length === 0 || input.title.length > MAX_TITLE_LENGTH) {
@@ -192,6 +194,14 @@ export function createSession(
   if (input.summary.length === 0 || input.summary.length > MAX_SUMMARY_LENGTH) {
     throw new InvalidSessionInputError(
       `summary must be 1-${MAX_SUMMARY_LENGTH} chars, got ${input.summary.length}`,
+    );
+  }
+  if (
+    input.publicationKey !== null &&
+    !isValidPublicationKey(input.publicationKey)
+  ) {
+    throw new InvalidSessionInputError(
+      "publicationKey must be a 64-character lowercase SHA-256 hex digest or null",
     );
   }
   if (!isBlobPointer(input.transcriptPointer)) {
@@ -217,11 +227,11 @@ export function createSession(
 
   return {
     ...input,
-    publicationKey,
     id: generateId(),
     createdAt: now(),
     contentBlocked: null,
     supersededAt: null,
+    deletedAt: null,
   };
 }
 
@@ -269,6 +279,48 @@ export function applyContentBlock(
   };
 }
 
+/**
+ * Soft-deletes the current snapshot so link resolution can fail closed
+ * without erasing the immutable row. Like other lifecycle transitions,
+ * repeating the same transition is a no-op once already in that state,
+ * but only the current (non-superseded) row may be tombstoned.
+ */
+export function tombstoneSession(
+  session: Session,
+  deps: { now?: () => Date } = {},
+): Session {
+  assertCurrentSessionRow(session, "tombstone");
+  if (session.deletedAt !== null) {
+    return session;
+  }
+  const now = deps.now ?? (() => new Date());
+  return { ...session, deletedAt: now() };
+}
+
+/**
+ * Reverses `tombstoneSession` on the current row. Restoring an already-
+ * active snapshot is an idempotent no-op, matching the model's existing
+ * one-way transition style.
+ */
+export function restoreSession(session: Session): Session {
+  if (session.deletedAt === null) {
+    return session;
+  }
+  assertCurrentSessionRow(session, "restore");
+  return { ...session, deletedAt: null };
+}
+
 function defaultGenerateId(): string {
   return `sess_${randomUUID()}`;
+}
+
+function assertCurrentSessionRow(
+  session: Session,
+  action: "tombstone" | "restore",
+): void {
+  if (session.supersededAt !== null) {
+    throw new InvalidSessionLifecycleTransitionError(
+      `Only the current (non-superseded) session row may ${action}; session ${session.id} was superseded at ${session.supersededAt.toISOString()}`,
+    );
+  }
 }

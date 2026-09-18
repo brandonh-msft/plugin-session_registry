@@ -3,9 +3,12 @@ import {
   applyContentBlock,
   createSession,
   InvalidSessionInputError,
+  InvalidSessionLifecycleTransitionError,
   isBlobPointer,
   isValidHarnessSessionId,
+  restoreSession,
   supersedeSession,
+  tombstoneSession,
   type NewSessionInput,
 } from "../../src/models/session.js";
 
@@ -15,6 +18,8 @@ function validInput(overrides: Partial<NewSessionInput> = {}): NewSessionInput {
     harnessSessionId: "copilot-2026-09-08-auth-flake",
     title: "Fixed the flaky auth test",
     summary: "Investigated and resolved a race condition in the login flow.",
+    publicationKey:
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     harness: { name: "copilot-cli", version: "1.0.83-5" },
     transcriptPointer: { containerName: "transcripts", blobKey: "sess-1/transcript.json" },
     artifactPointers: [
@@ -36,15 +41,20 @@ describe("createSession", () => {
     expect(session.id).toBe("sess_fixed");
     expect(session.harnessSessionId).toBe("copilot-2026-09-08-auth-flake");
     expect(session.createdAt).toEqual(new Date("2026-09-08T00:00:00Z"));
+    expect(session.publicationKey).toBe(
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    );
     expect(session.contentBlocked).toBeNull();
     expect(session.supersededAt).toBeNull();
+    expect(session.deletedAt).toBeNull();
     expect(session.transcriptPointer).toEqual({
       containerName: "transcripts",
       blobKey: "sess-1/transcript.json",
     });
   });
 
-  it("rejects a raw Buffer passed where a transcript pointer is expected (edge case: structural, not runtime-only)", () => {    const input = validInput({
+  it("rejects a raw Buffer passed where a transcript pointer is expected (edge case: structural, not runtime-only)", () => {
+    const input = validInput({
       // Simulates a caller mistakenly inlining content instead of a pointer.
       transcriptPointer: Buffer.from("raw transcript bytes") as never,
     });
@@ -72,6 +82,12 @@ describe("createSession", () => {
 
   it("rejects an empty title (edge case)", () => {
     const input = validInput({ title: "" });
+    expect(() => createSession(input)).toThrow(InvalidSessionInputError);
+  });
+
+  it("rejects a malformed publication key (error path)", () => {
+    const input = validInput({ publicationKey: "not-a-sha256" });
+
     expect(() => createSession(input)).toThrow(InvalidSessionInputError);
   });
 });
@@ -191,5 +207,67 @@ describe("supersedeSession", () => {
     });
 
     expect(twice.supersededAt).toEqual(new Date("2026-09-11T00:00:00Z"));
+  });
+});
+
+describe("tombstoneSession", () => {
+  it("marks the current snapshot deleted without changing its publication identity (happy path)", () => {
+    const session = createSession(validInput());
+    const tombstoned = tombstoneSession(session, {
+      now: () => new Date("2026-09-12T00:00:00Z"),
+    });
+
+    expect(tombstoned.deletedAt).toEqual(new Date("2026-09-12T00:00:00Z"));
+    expect(tombstoned.publicationKey).toBe(session.publicationKey);
+    expect(session.deletedAt).toBeNull();
+  });
+
+  it("throws when asked to tombstone a superseded snapshot (edge case)", () => {
+    const session = supersedeSession(createSession(validInput()), {
+      now: () => new Date("2026-09-12T00:00:00Z"),
+    });
+
+    expect(() => tombstoneSession(session)).toThrow(
+      InvalidSessionLifecycleTransitionError,
+    );
+  });
+});
+
+describe("restoreSession", () => {
+  it("restores a tombstoned current snapshot (happy path)", () => {
+    const session = tombstoneSession(createSession(validInput()), {
+      now: () => new Date("2026-09-12T00:00:00Z"),
+    });
+
+    const restored = restoreSession(session);
+
+    expect(restored.deletedAt).toBeNull();
+  });
+
+  it("returns the original object unchanged when the session is not tombstoned (edge case)", () => {
+    const session = createSession(validInput());
+
+    expect(restoreSession(session)).toBe(session);
+  });
+
+  it("returns a non-tombstoned superseded session unchanged before enforcing current-row checks (edge case)", () => {
+    const session = supersedeSession(createSession(validInput()), {
+      now: () => new Date("2026-09-12T00:00:00Z"),
+    });
+
+    expect(restoreSession(session)).toBe(session);
+  });
+
+  it("throws when asked to restore a tombstoned superseded snapshot (edge case)", () => {
+    const session = supersedeSession(
+      tombstoneSession(createSession(validInput()), {
+        now: () => new Date("2026-09-12T00:00:00Z"),
+      }),
+      { now: () => new Date("2026-09-13T00:00:00Z") },
+    );
+
+    expect(() => restoreSession(session)).toThrow(
+      InvalidSessionLifecycleTransitionError,
+    );
   });
 });

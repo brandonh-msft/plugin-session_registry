@@ -1,5 +1,6 @@
 export * from "./models/session.js";
 export * from "./models/audiencePolicy.js";
+export * from "./models/publicationKey.js";
 export * from "./storage/blobTags.js";
 export * from "./scanning/scanner.js";
 export * from "./scanning/resolution.js";
@@ -9,6 +10,7 @@ export * from "./archive/nativeSessionBundle.js";
 export * from "./archive/importErrors.js";
 export * from "./archive/importContracts.js";
 export * from "./archive/nativeSessionBundleReader.js";
+export * from "./archive/sessionManifest.js";
 export * from "./archive/importManifest.js";
 export * from "./archive/jsonPrecision.js";
 export * from "./archive/importBriefing.js";

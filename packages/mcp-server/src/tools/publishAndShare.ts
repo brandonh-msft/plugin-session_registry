@@ -46,6 +46,7 @@ export interface ShareLinkRequest {
 }
 
 export interface PublishAndShareInput extends PublishSessionInput {
+  readonly publicationKey: string;
   readonly share: ShareLinkRequest;
   /**
    * Binds this call to a single confirmed request (`PUBLISH-R54`): the
@@ -96,6 +97,7 @@ export interface BackendPublishAndShareClient {
     submission: PublishSubmission,
     share: ShareLinkRequest,
     idempotencyKey: string,
+    publicationKey: string,
   ): Promise<PublishAndShareResult>;
 }
 
@@ -141,6 +143,7 @@ export async function publishAndShareSession(
         submission,
         shareRequest,
         input.idempotencyKey,
+        input.publicationKey,
       );
       return { sessionId: result.sessionId };
     },

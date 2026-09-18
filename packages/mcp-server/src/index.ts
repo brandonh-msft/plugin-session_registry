@@ -29,12 +29,30 @@ import {
   FULL_FIDELITY_PUBLISH_PROMPT_CHECKLIST,
   FULL_FIDELITY_PUBLISH_TOOL_DESCRIPTION,
   NATIVE_HARNESSES,
+  computePublicationKey,
   type AudiencePolicy,
+  type PublicationExpirationChoice,
 } from "@session-registry/core";
 import {
   publishAndShareSession,
   type BackendPublishAndShareClient,
 } from "./tools/publishAndShare.js";
+import {
+  deleteSession,
+  type BackendDeleteSessionClient,
+} from "./tools/deleteSession.js";
+import {
+  restoreSession,
+  type BackendRestoreSessionClient,
+} from "./tools/restoreSession.js";
+import {
+  purgeSession,
+  type BackendPurgeSessionClient,
+} from "./tools/purgeSession.js";
+import {
+  purgeSessions,
+  type BackendListTombstonedSessionsClient,
+} from "./tools/purgeSessions.js";
 import {
   createHttpBackendClient,
   PublishStateUnknownError,
@@ -49,6 +67,7 @@ import type { OwnerRedaction } from "./native/review.js";
 import { audiencePolicySchema, audienceText } from "./audiencePolicy.js";
 import {
   CaptureReviewRequiredError,
+  derivePublicationContentDecisions,
   resolveReviewedFindings,
   safeReviewText,
   type CaptureResolution,
@@ -110,9 +129,20 @@ export interface PublishToolInput {
   readonly expiresAt?: string | null;
 }
 
+type SessionRegistryBackendClient = BackendPublishAndShareClient &
+  BackendDeleteSessionClient &
+  BackendRestoreSessionClient &
+  BackendPurgeSessionClient &
+  BackendListTombstonedSessionsClient;
+type ServerBackendClient = BackendPublishAndShareClient &
+  Partial<BackendDeleteSessionClient> &
+  Partial<BackendRestoreSessionClient> &
+  Partial<BackendPurgeSessionClient> &
+  Partial<BackendListTombstonedSessionsClient>;
+
 export function createDefaultBackendClient(
   env: NodeJS.ProcessEnv,
-): BackendPublishAndShareClient {
+): SessionRegistryBackendClient {
   const baseUrl = requiredEnvironmentValue(env, "SESSION_REGISTRY_API_URL");
   const token = requiredEnvironmentValue(env, "SESSION_REGISTRY_TOKEN");
   const getAccessToken = async () => token;
@@ -163,6 +193,20 @@ export function createPublishHandler(
           transcript: capture.content,
           artifacts: [],
           harness: capture.archive.harness,
+          publicationKey: computePublicationKey({
+            title: capture.title,
+            summary: capture.summary,
+            audiencePolicy,
+            expiresAtChoice: publicationExpirationChoice(input.expiresAt),
+            ownerRedactions: input.ownerRedactions ?? [],
+            contentDecisions: derivePublicationContentDecisions(
+              capture.archive,
+              input.captureId,
+              { title: capture.title, summary: capture.summary },
+              input.ownerRedactions,
+              input.resolutions,
+            ),
+          }),
           share: {
             audiencePolicy,
             ...(input.expiresAt === undefined
@@ -291,6 +335,18 @@ export function createPublishHandler(
   };
 }
 
+function publicationExpirationChoice(
+  value: PublishToolInput["expiresAt"],
+): PublicationExpirationChoice {
+  if (value === undefined) {
+    return "default";
+  }
+  if (value === null) {
+    return "never";
+  }
+  return new Date(value);
+}
+
 function confirmedRequestKey(input: PublishToolInput): string {
   return createHash("sha256")
     .update(
@@ -313,7 +369,7 @@ function confirmedRequestKey(input: PublishToolInput): string {
 }
 
 export function createServer(
-  backendClient: BackendPublishAndShareClient = createDefaultBackendClient(
+  backendClient: ServerBackendClient = createDefaultBackendClient(
     process.env,
   ),
   captures: NativeCaptureService = createNativeCaptureService(),
@@ -504,6 +560,190 @@ export function createServer(
     createPublishHandler(backendClient, captures),
   );
 
+  server.registerTool(
+    "delete_session",
+    {
+      title: "Delete published session",
+      description:
+        "Tombstone one previously published session by immutable sessionId. " +
+        "Owner identity comes only from the configured bearer token; only the current publication row can be deleted. " +
+        "Deleting an already tombstoned session succeeds as an idempotent no-op.",
+      inputSchema: z.object({
+        sessionId: z.string().min(1).describe(
+          "Immutable published session id returned by publish_session or save_session.",
+        ),
+      }).strict(),
+    },
+    async (input) => {
+      const result = await deleteSession(input, {
+        backendClient: requireDeleteSessionBackendClient(backendClient),
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              result.outcome === "deleted"
+                ? `Deleted session ${result.sessionId}.`
+                : `Session ${result.sessionId} was already tombstoned.`,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "restore_session",
+    {
+      title: "Restore published session",
+      description:
+        "Restore one previously tombstoned published session by immutable sessionId. " +
+        "Owner identity comes only from the configured bearer token; only the current publication row can be restored. " +
+        "A content-blocked session can be restored but remains inaccessible and reports a distinct outcome.",
+      inputSchema: z.object({
+        sessionId: z.string().min(1).describe(
+          "Immutable published session id returned by publish_session or save_session.",
+        ),
+      }).strict(),
+    },
+    async (input) => {
+      const result = await restoreSession(input, {
+        backendClient: requireRestoreSessionBackendClient(backendClient),
+      });
+      const message =
+        result.outcome === "restored"
+          ? `Restored session ${result.sessionId}.`
+          : result.outcome === "already_active"
+            ? `Session ${result.sessionId} was already active.`
+            : `Restored session ${result.sessionId}, but it remains inaccessible because its content is blocked.`;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: message,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "purge_session",
+    {
+      title: "Permanently purge one published session",
+      description:
+        "Irreversibly hard-delete one previously tombstoned published session by immutable sessionId. " +
+        "Only the owner can purge it, and only after delete_session has already tombstoned it. " +
+        "Blob cleanup is best-effort: shared blobs are preserved, and any failed blob deletes are reported without resurrecting the row.",
+      inputSchema: z.object({
+        sessionId: z.string().min(1).describe(
+          "Immutable published session id returned by publish_session or save_session.",
+        ),
+      }).strict(),
+    },
+    async (input) => {
+      const result = await purgeSession(input, {
+        backendClient: requirePurgeSessionBackendClient(backendClient),
+      });
+      const message =
+        result.outcome === "purged"
+          ? `Purged session ${result.sessionId}.`
+          : `Purged session ${result.sessionId}, but some blobs could not be deleted immediately.`;
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: message,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "purge_sessions",
+    {
+      title: "Permanently purge all tombstoned published sessions",
+      description:
+        "Preview and then, within this same tool call, permanently purge all of the caller's currently tombstoned published sessions. " +
+        "This tool never accepts an explicit id list; the server computes the current tombstoned set, asks for confirmation once, and then purges only that fixed previewed set.",
+      inputSchema: z.object({}).strict(),
+    },
+    async (input, extra) => {
+      const result = await purgeSessions(input, {
+        backendClient: requirePurgeSessionsBackendClient(backendClient),
+        confirm: async (request) => {
+          if (!server.server.getClientCapabilities()?.elicitation?.form) {
+            return undefined;
+          }
+          const response = await server.server.elicitInput(
+            {
+              message: request.message,
+              requestedSchema: request.requestedSchema,
+            },
+            {
+              relatedRequestId: extra.requestId,
+              signal: extra.signal,
+              timeout: 10 * 60 * 1_000,
+            },
+          );
+          return response as {
+            action: "accept" | "decline" | "cancel";
+            content?: { confirm?: boolean };
+          };
+        },
+      });
+
+      const succeeded = result.outcomes.filter(
+        (outcome) =>
+          outcome.outcome === "purged" ||
+          outcome.outcome === "purged_with_blob_cleanup_failures",
+      ).length;
+      const partial = result.outcomes.filter(
+        (outcome) => outcome.outcome === "purged_with_blob_cleanup_failures",
+      ).length;
+      const skipped = result.outcomes.filter(
+        (outcome) => outcome.outcome === "skipped",
+      ).length;
+      const failed = result.outcomes.filter(
+        (outcome) => outcome.outcome === "failed",
+      ).length;
+      const message =
+        result.confirmation === "not_needed"
+          ? "No tombstoned sessions were available to purge."
+          : result.confirmation === "accepted"
+            ? `Processed ${result.previewCount} previewed tombstoned sessions: ${succeeded} purged, ${partial} with blob cleanup warnings, ${skipped} skipped, ${failed} failed.`
+            : result.confirmation === "unavailable"
+              ? "This client does not support in-call confirmation forms, so nothing was purged."
+              : "Purge cancelled; nothing was deleted.";
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: message,
+          },
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
   server.registerPrompt(
     "prepare_full_fidelity_publish_session",
     {
@@ -529,6 +769,45 @@ export function createServer(
   );
 
   return server;
+}
+
+function requireDeleteSessionBackendClient(
+  backendClient: ServerBackendClient,
+): BackendDeleteSessionClient {
+  if (typeof backendClient.deleteSession !== "function") {
+    throw new Error("delete_session backend client is not configured");
+  }
+  return backendClient as BackendDeleteSessionClient;
+}
+
+function requireRestoreSessionBackendClient(
+  backendClient: ServerBackendClient,
+): BackendRestoreSessionClient {
+  if (typeof backendClient.restoreSession !== "function") {
+    throw new Error("restore_session backend client is not configured");
+  }
+  return backendClient as BackendRestoreSessionClient;
+}
+
+function requirePurgeSessionBackendClient(
+  backendClient: ServerBackendClient,
+): BackendPurgeSessionClient {
+  if (typeof backendClient.purgeSession !== "function") {
+    throw new Error("purge_session backend client is not configured");
+  }
+  return backendClient as BackendPurgeSessionClient;
+}
+
+function requirePurgeSessionsBackendClient(
+  backendClient: ServerBackendClient,
+): BackendPurgeSessionClient & BackendListTombstonedSessionsClient {
+  if (typeof backendClient.purgeSession !== "function") {
+    throw new Error("purge_sessions backend purge client is not configured");
+  }
+  if (typeof backendClient.listTombstonedSessions !== "function") {
+    throw new Error("purge_sessions backend preview client is not configured");
+  }
+  return backendClient as BackendPurgeSessionClient & BackendListTombstonedSessionsClient;
 }
 
 async function main(): Promise<void> {

@@ -33,6 +33,35 @@ import type {
   PublishAndShareResult,
   ShareLinkRequest,
 } from "./tools/publishAndShare.js";
+import {
+  DeleteSessionNotCurrentPublicationError,
+  DeleteSessionNotFoundError,
+  DeleteSessionRequestFailedError,
+  DeleteSessionStateUnknownError,
+  type BackendDeleteSessionClient,
+  type DeleteSessionResult,
+} from "./tools/deleteSession.js";
+import {
+  RestoreSessionNotCurrentPublicationError,
+  RestoreSessionNotFoundError,
+  RestoreSessionRequestFailedError,
+  RestoreSessionStateUnknownError,
+  type BackendRestoreSessionClient,
+  type RestoreSessionResult,
+} from "./tools/restoreSession.js";
+import {
+  PurgeSessionNotCurrentPublicationError,
+  PurgeSessionNotFoundError,
+  PurgeSessionNotTombstonedError,
+  PurgeSessionRequestFailedError,
+  PurgeSessionStateUnknownError,
+  type BackendPurgeSessionClient,
+  type PurgeSessionResult,
+} from "./tools/purgeSession.js";
+import type {
+  BackendListTombstonedSessionsClient,
+  ListTombstonedSessionsResult,
+} from "./tools/purgeSessions.js";
 
 export interface BlobPointer {
   readonly containerName: string;
@@ -121,29 +150,71 @@ interface PublishAndShareResponseBody {
   readonly error?: string;
 }
 
+interface SessionLifecycleResponseBody {
+  readonly sessionId?: string;
+  readonly outcome?: string;
+  readonly blobResults?: readonly {
+    readonly pointer?: BlobPointer;
+    readonly outcome?: string;
+    readonly detail?: string;
+  }[];
+  readonly sessions?: readonly {
+    readonly sessionId?: string;
+    readonly harnessSessionId?: string;
+    readonly title?: string;
+    readonly deletedAt?: string;
+  }[];
+  readonly error?: string;
+}
+
+interface JsonResponseLike {
+  readonly status: number;
+  readonly ok: boolean;
+  readonly statusText: string;
+  json(): Promise<unknown>;
+}
+
+type JsonFetch = (
+  input: string,
+  init: {
+    readonly method: string;
+    readonly headers: Record<string, string>;
+    readonly body?: string;
+  },
+) => Promise<JsonResponseLike>;
+
 export function createHttpBackendClient(
   options: HttpBackendClientOptions,
-): BackendPublishAndShareClient {
+) : BackendPublishAndShareClient &
+  BackendDeleteSessionClient &
+  BackendRestoreSessionClient &
+  BackendPurgeSessionClient &
+  BackendListTombstonedSessionsClient {
   const doFetch = options.fetch ?? globalThis.fetch;
   const sleep = options.sleep ?? defaultSleep;
-  const endpoint = `${options.baseUrl.replace(/\/+$/, "")}/api/sessions:publishAndShare`;
+  const baseUrl = options.baseUrl.replace(/\/+$/, "");
+  const publishAndShareEndpoint = `${baseUrl}/api/sessions:publishAndShare`;
 
   return {
     async submitAndCreateLink(
       submission: PublishSubmission,
       share: ShareLinkRequest,
       idempotencyKey: string,
+      publicationKey: string,
     ): Promise<PublishAndShareResult> {
       if (parseNativeSessionArchiveView(submission.transcript) !== null) {
         throw new NativeSessionArchiveError("A readable projection is not a native publication source. Use the complete owner-approved capture.");
       }
       const archive = parseNativeSessionArchive(submission.transcript);
-      const native = archive && hasNativeSessionBundle(archive)
+      if (archive === null) {
+        throw new NativeSessionArchiveError("A native session archive is required. Use the complete owner-approved capture.");
+      }
+      const native = hasNativeSessionBundle(archive)
         ? buildNativeSessionPublication(archive)
         : null;
       const transcriptPointer = await options.uploader.upload(
         native?.content ?? submission.transcript,
-        archive ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
+        "application/json; charset=utf-8",
         "transcript",
       );
       const artifactPointers: BlobPointer[] = [];
@@ -170,7 +241,7 @@ export function createHttpBackendClient(
           }
         }
         try {
-        response = await doFetch(endpoint, {
+        response = await doFetch(publishAndShareEndpoint, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -191,6 +262,7 @@ export function createHttpBackendClient(
             ? {}
             : { expiresAt: share.expiresAt === null ? null : share.expiresAt.toISOString() }),
           idempotencyKey,
+          publicationKey,
         }),
         });
           break;
@@ -245,7 +317,260 @@ export function createHttpBackendClient(
         idempotentReplay: body.idempotentReplay,
       };
     },
+    async deleteSession(sessionId: string): Promise<DeleteSessionResult> {
+      const body = await submitSessionLifecycleRequest(
+        `${baseUrl}/api/sessions/delete`,
+        sessionId,
+        options.getAccessToken,
+        doFetch,
+        DeleteSessionStateUnknownError,
+      );
+      if (body.sessionId !== sessionId) {
+        throw new DeleteSessionStateUnknownError(
+          "response sessionId did not match the requested sessionId",
+        );
+      }
+      if (body.outcome !== "deleted" && body.outcome !== "already_tombstoned") {
+        throw new DeleteSessionStateUnknownError(
+          "response did not include a valid delete outcome",
+        );
+      }
+      return { sessionId: body.sessionId, outcome: body.outcome };
+    },
+    async restoreSession(sessionId: string): Promise<RestoreSessionResult> {
+      const body = await submitSessionLifecycleRequest(
+        `${baseUrl}/api/sessions/restore`,
+        sessionId,
+        options.getAccessToken,
+        doFetch,
+        RestoreSessionStateUnknownError,
+      );
+      if (body.sessionId !== sessionId) {
+        throw new RestoreSessionStateUnknownError(
+          "response sessionId did not match the requested sessionId",
+        );
+      }
+      if (
+        body.outcome !== "restored" &&
+        body.outcome !== "already_active" &&
+        body.outcome !== "restored_but_content_blocked"
+      ) {
+        throw new RestoreSessionStateUnknownError(
+          "response did not include a valid restore outcome",
+        );
+      }
+      return { sessionId: body.sessionId, outcome: body.outcome };
+    },
+    async purgeSession(sessionId: string): Promise<PurgeSessionResult> {
+      const body = await submitSessionLifecycleRequest(
+        `${baseUrl}/api/sessions/purge`,
+        sessionId,
+        options.getAccessToken,
+        doFetch,
+        PurgeSessionStateUnknownError,
+      );
+      if (body.sessionId !== sessionId) {
+        throw new PurgeSessionStateUnknownError(
+          "response sessionId did not match the requested sessionId",
+        );
+      }
+      if (
+        body.outcome !== "purged" &&
+        body.outcome !== "purged_with_blob_cleanup_failures"
+      ) {
+        throw new PurgeSessionStateUnknownError(
+          "response did not include a valid purge outcome",
+        );
+      }
+      const blobResults = parsePurgeBlobResults(body.blobResults);
+      return { sessionId: body.sessionId, outcome: body.outcome, blobResults };
+    },
+    async listTombstonedSessions(): Promise<ListTombstonedSessionsResult> {
+      return submitListTombstonedSessionsRequest(
+        `${baseUrl}/api/sessions/purge-preview`,
+        options.getAccessToken,
+        doFetch,
+      );
+    },
   };
+}
+
+async function submitSessionLifecycleRequest(
+  endpoint: string,
+  sessionId: string,
+  getAccessToken: HttpBackendClientOptions["getAccessToken"],
+  doFetch: JsonFetch,
+  UnknownError: new (detail: string) => Error,
+): Promise<SessionLifecycleResponseBody> {
+  let response: JsonResponseLike;
+  try {
+    response = await submitJsonRequest(
+      endpoint,
+      "POST",
+      getAccessToken,
+      doFetch,
+      { sessionId },
+    );
+  } catch (error) {
+    throw new UnknownError(error instanceof Error ? error.message : "request failed");
+  }
+
+  const body = (await response.json().catch(() => ({}))) as SessionLifecycleResponseBody;
+  if (response.status === 404) {
+    if (endpoint.endsWith("/delete")) {
+      throw new DeleteSessionNotFoundError(sessionId);
+    }
+    if (endpoint.endsWith("/purge")) {
+      throw new PurgeSessionNotFoundError(sessionId);
+    }
+    throw new RestoreSessionNotFoundError(sessionId);
+  }
+  if (response.status === 409) {
+    const detail = body.error ?? response.statusText;
+    if (endpoint.endsWith("/delete")) {
+      throw new DeleteSessionNotCurrentPublicationError(sessionId, detail);
+    }
+    if (endpoint.endsWith("/purge")) {
+      if (detail.includes("must be tombstoned before it can be purged")) {
+        throw new PurgeSessionNotTombstonedError(sessionId, detail);
+      }
+      throw new PurgeSessionNotCurrentPublicationError(sessionId, detail);
+    }
+    throw new RestoreSessionNotCurrentPublicationError(sessionId, detail);
+  }
+  if (!response.ok) {
+    const detail = body.error ?? response.statusText;
+    if (endpoint.endsWith("/delete")) {
+      throw new DeleteSessionRequestFailedError(response.status, detail);
+    }
+    if (endpoint.endsWith("/purge")) {
+      throw new PurgeSessionRequestFailedError(response.status, detail);
+    }
+    throw new RestoreSessionRequestFailedError(response.status, detail);
+  }
+  if (typeof body.sessionId !== "string" || typeof body.outcome !== "string") {
+    throw new UnknownError("response did not include sessionId and outcome");
+  }
+  if (body.sessionId.trim().length === 0 || body.outcome.trim().length === 0) {
+    throw new UnknownError("response did not include non-empty sessionId and outcome values");
+  }
+  return body;
+}
+
+async function submitListTombstonedSessionsRequest(
+  endpoint: string,
+  getAccessToken: HttpBackendClientOptions["getAccessToken"],
+  doFetch: JsonFetch,
+): Promise<ListTombstonedSessionsResult> {
+  let response: JsonResponseLike;
+  try {
+    response = await submitJsonRequest(endpoint, "GET", getAccessToken, doFetch);
+  } catch (error) {
+    throw new PurgeSessionStateUnknownError(
+      error instanceof Error ? error.message : "request failed",
+    );
+  }
+
+  const body = (await response.json().catch(() => ({}))) as SessionLifecycleResponseBody;
+  if (!response.ok) {
+    throw new PurgeSessionRequestFailedError(
+      response.status,
+      body.error ?? response.statusText,
+    );
+  }
+  return {
+    sessions: parseTombstonedSessions(body.sessions),
+  };
+}
+
+async function submitJsonRequest(
+  endpoint: string,
+  method: "GET" | "POST",
+  getAccessToken: HttpBackendClientOptions["getAccessToken"],
+  doFetch: JsonFetch,
+  body?: unknown,
+): Promise<JsonResponseLike> {
+  const token = await getAccessToken();
+  return doFetch(endpoint, {
+    method,
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
+function parsePurgeBlobResults(
+  value: SessionLifecycleResponseBody["blobResults"],
+): PurgeSessionResult["blobResults"] {
+  if (value === undefined) {
+    return [];
+  }
+  return value.map((entry, index) => {
+    const pointer = entry.pointer;
+    if (
+      pointer === undefined ||
+      typeof pointer.containerName !== "string" ||
+      typeof pointer.blobKey !== "string"
+    ) {
+      throw new PurgeSessionStateUnknownError(
+        `response blobResults[${index}] did not include a valid pointer`,
+      );
+    }
+    if (
+      entry.outcome !== "deleted" &&
+      entry.outcome !== "skipped_shared" &&
+      entry.outcome !== "delete_failed"
+    ) {
+      throw new PurgeSessionStateUnknownError(
+        `response blobResults[${index}] did not include a valid outcome`,
+      );
+    }
+    if (entry.detail !== undefined && typeof entry.detail !== "string") {
+      throw new PurgeSessionStateUnknownError(
+        `response blobResults[${index}] did not include a valid detail`,
+      );
+    }
+    return {
+      pointer,
+      outcome: entry.outcome,
+      ...(entry.detail === undefined ? {} : { detail: entry.detail }),
+    };
+  });
+}
+
+function parseTombstonedSessions(
+  value: SessionLifecycleResponseBody["sessions"],
+): ListTombstonedSessionsResult["sessions"] {
+  if (value === undefined) {
+    throw new PurgeSessionStateUnknownError(
+      "response did not include tombstoned sessions",
+    );
+  }
+  return value.map((session, index) => {
+    if (
+      typeof session.sessionId !== "string" ||
+      typeof session.harnessSessionId !== "string" ||
+      typeof session.title !== "string" ||
+      typeof session.deletedAt !== "string"
+    ) {
+      throw new PurgeSessionStateUnknownError(
+        `response sessions[${index}] was malformed`,
+      );
+    }
+    if (
+      session.sessionId.trim().length === 0 ||
+      session.harnessSessionId.trim().length === 0 ||
+      session.title.trim().length === 0 ||
+      session.deletedAt.trim().length === 0
+    ) {
+      throw new PurgeSessionStateUnknownError(
+        `response sessions[${index}] contained empty fields`,
+      );
+    }
+    return session as ListTombstonedSessionsResult["sessions"][number];
+  });
 }
 
 function validateShareUrl(value: string, harnessSessionId: string, linkId: string): void {

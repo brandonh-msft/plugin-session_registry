@@ -3,6 +3,7 @@
   "compilerOptions": {
     "outDir": "./dist",
     "rootDir": "./src",
+    "types": ["node"],
     // Keep incremental state inside outDir. composite implies incremental, and
     // TypeScript 7 otherwise writes tsconfig.tsbuildinfo beside this file —
     // where deleting dist/ (or excluding it from a Docker context) leaves state

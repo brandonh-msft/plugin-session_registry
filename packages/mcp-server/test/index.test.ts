@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { NATIVE_SESSION_ARCHIVE_FORMAT, type NativeSessionArchive } from "@session-registry/core";
+import {
+  NATIVE_SESSION_ARCHIVE_FORMAT,
+  computePublicationKey,
+  type NativeSessionArchive,
+} from "@session-registry/core";
 import { createDefaultBackendClient, createPublishHandler, type PublishToolInput } from "../src/index.js";
 import type { BackendPublishAndShareClient } from "../src/tools/publishAndShare.js";
 import { PublishStateUnknownError } from "../src/httpBackendClient.js";
@@ -130,6 +134,67 @@ describe("createPublishHandler", () => {
         },
       ],
     });
+  });
+
+  it("sends the same non-empty publication key for identical approved settings", async () => {
+    const publicationKeys: string[] = [];
+    const backendClient: BackendPublishAndShareClient = {
+      async submitAndCreateLink(_submission, _share, _idempotencyKey, publicationKey) {
+        publicationKeys.push(publicationKey);
+        return published();
+      },
+    };
+
+    await createPublishHandler(backendClient, captures())(input());
+    await createPublishHandler(backendClient, captures())(input());
+
+    expect(publicationKeys).toHaveLength(2);
+    expect(publicationKeys[0]).toBeDefined();
+    expect(publicationKeys[0]?.length).toBeGreaterThan(0);
+    expect(publicationKeys[1]).toBe(publicationKeys[0]);
+    expect(publicationKeys[0]).toBe(computePublicationKey({
+      title: "Fix MCP publishing",
+      summary: "Published the native session rather than a conversation excerpt.",
+      audiencePolicy: { accessMode: "anonymous" },
+      expiresAtChoice: "default",
+      ownerRedactions: [],
+      contentDecisions: [],
+    }));
+  });
+
+  it("changes the publication key when the audience policy changes", async () => {
+    const publicationKeys: string[] = [];
+    const backendClient: BackendPublishAndShareClient = {
+      async submitAndCreateLink(_submission, _share, _idempotencyKey, publicationKey) {
+        publicationKeys.push(publicationKey);
+        return published();
+      },
+    };
+    const restricted = {
+      accessMode: "authenticated" as const,
+      rules: [{ type: "specific-users" as const, githubLogins: ["fixture-reviewer"] }],
+    };
+
+    await createPublishHandler(backendClient, captures())(input());
+    await createPublishHandler(backendClient, captures())(input({ audiencePolicy: restricted }));
+
+    expect(publicationKeys).toHaveLength(2);
+    expect(publicationKeys[1]).not.toBe(publicationKeys[0]);
+  });
+
+  it("keeps the publication key stable when the same conversation is recaptured under a new capture id", async () => {
+    const publicationKeys: string[] = [];
+    const backendClient: BackendPublishAndShareClient = {
+      async submitAndCreateLink(_submission, _share, _idempotencyKey, publicationKey) {
+        publicationKeys.push(publicationKey);
+        return published();
+      },
+    };
+
+    await createPublishHandler(backendClient, captures())(input({ captureId: "a".repeat(64) }));
+    await createPublishHandler(backendClient, captures())(input({ captureId: "b".repeat(64) }));
+
+    expect(publicationKeys).toEqual([publicationKeys[0], publicationKeys[0]]);
   });
 
   it("returns the enforced restricted audience and safe redaction counts in the publication receipt", async () => {

@@ -4,6 +4,7 @@ import {
   applyResolutions,
   NATIVE_SESSION_ARCHIVE_FORMAT,
   NATIVE_SESSION_BUNDLE_WARNING,
+  type PublicationContentDecision,
   hasNativeSessionBundle,
   inspectNativeJsonl,
   nativeFileContentBytes,
@@ -473,6 +474,50 @@ export interface ReviewedCapture {
   readonly falsePositiveSpellings: readonly string[];
   /** Surviving owner-approved metadata findings, rebased to the resulting text. */
   readonly metadataResolutions: readonly CaptureResolution[];
+}
+
+export function derivePublicationContentDecisions(
+  archive: NativeSessionArchive,
+  seed: string,
+  metadata: { readonly title: string; readonly summary: string },
+  ownerRedactions: readonly OwnerRedaction[] = [],
+  resolutions: readonly CaptureResolution[] = [],
+): readonly PublicationContentDecision[] {
+  const findings = locateFindings(archive, seed, metadata, ownerRedactions);
+  const actions = new Map<string, ResolutionAction>(
+    findings.flatMap((finding) =>
+      finding.ownerAction === undefined || finding.manualReview
+        ? []
+        : [[finding.id, finding.ownerAction] as const],
+    ),
+  );
+  const known = new Map(findings.map((finding) => [finding.id, finding]));
+  for (const resolution of resolutions) {
+    const finding = known.get(resolution.findingId);
+    if (
+      finding === undefined ||
+      finding.manualReview ||
+      resolution.action.kind === "acknowledge-unscanned" ||
+      actions.has(resolution.findingId)
+    ) {
+      continue;
+    }
+    actions.set(resolution.findingId, resolution.action);
+  }
+  return findings.flatMap((finding): PublicationContentDecision[] => {
+    const action = actions.get(finding.id);
+    if (action === undefined) {
+      return [];
+    }
+    return [{
+      findingId: finding.id,
+      finding: {
+        category: finding.category,
+        matchedText: finding.decodedText,
+      },
+      action,
+    }];
+  });
 }
 
 function findingKey(finding: LocatedFinding, offset = finding.leafOffset): string {
