@@ -351,7 +351,15 @@ describe("createPublishHandler", () => {
     expect((await handler(input({ resolutions: [resolution, resolution] }))).isError).toBe(true);
     expect((await handler(input({ resolutions: [{ ...resolution, findingId: "b".repeat(64) }] }))).isError).toBe(true);
     expect(uploads).toBe(0);
-    expect((await handler(input({ resolutions: [...acknowledgeFixtureWarnings(findings), resolution] }))).isError).not.toBe(true);
+    const missingAdditionalReview = await handler(input({
+      resolutions: [...acknowledgeFixtureWarnings(findings), resolution],
+    }));
+    expect(missingAdditionalReview.isError).toBe(true);
+    expect(missingAdditionalReview.content[0]?.text).toContain("additional-redaction review");
+    expect((await handler(input({
+      resolutions: [...acknowledgeFixtureWarnings(findings), resolution],
+      additionalRedactionsConfirmed: true,
+    }))).isError).not.toBe(true);
     expect(uploads).toBe(1);
   });
 

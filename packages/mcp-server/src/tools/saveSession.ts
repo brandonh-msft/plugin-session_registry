@@ -92,8 +92,7 @@ function parseOwnerRedactions(value: string): OwnerRedaction[] {
 
 export function saveConfirmation(
   input: { captureId: string; harnessSessionId: string; title: string; summary: string;
-    audiencePolicy: AudiencePolicy; expiresAt?: string | null; requiresWarning: boolean;
-    ownerRedactions: readonly OwnerRedaction[] },
+    audiencePolicy: AudiencePolicy; expiresAt?: string | null; requiresWarning: boolean },
 ): ElicitRequestFormParams {
   const access = input.audiencePolicy.accessMode === "anonymous"
     ? "Anyone (anonymous)" : `Restricted: ${JSON.stringify(input.audiencePolicy.rules)}`;
@@ -105,7 +104,6 @@ export function saveConfirmation(
       `Summary: ${input.summary}`,
       `Access: ${access}`,
       `Expiration: ${input.expiresAt === undefined ? "14 days (default)" : input.expiresAt === null ? "No expiration" : input.expiresAt}`,
-      `Additional owner-requested redactions: ${input.ownerRedactions.length}`,
       "Confirm these drafted values or edit them. Editing causes a re-scan and a fresh confirmation.",
       ...(input.requiresWarning ? [NATIVE_SESSION_BUNDLE_WARNING] : []),
       "Automated security detection is incomplete. You remain responsible for shared content.",
@@ -118,18 +116,42 @@ export function saveConfirmation(
         summary: { type: "string", title: "Summary", default: input.summary, minLength: 1, maxLength: 500 },
         audience: { type: "string", title: "Audience", description: AUDIENCE_INPUT_GUIDANCE, default: audienceText(input.audiencePolicy), minLength: 1 },
         expiration: { type: "string", title: "Expiration", description: "Number of days (e.g. 7 days), never, or a future ISO 8601 timestamp.", default: expirationText(input.expiresAt), minLength: 1 },
-        additionalRedactions: {
-          type: "string",
-          title: "Additional redactions (optional)",
-          description: 'One item per line: text to redact, or "text -> replacement" for a custom replacement (default replacement is [REDACTED]). Applied to every scannable native source and publication metadata occurrence, matched case-insensitively. Leave blank for none.',
-          default: ownerRedactionsText(input.ownerRedactions),
-        },
         confirmPublish: { type: "boolean", title: "Publish this session with the settings shown", default: false },
         ...(input.requiresWarning ? {
           acknowledgeWarning: { type: "boolean" as const, title: "I accept the native-package warning above", default: false },
         } : {}),
       },
       required: ["title", "summary", "audience", "expiration", "confirmPublish", ...(input.requiresWarning ? ["acknowledgeWarning"] : [])],
+    },
+  };
+}
+
+function additionalRedactionConfirmation(
+  input: { captureId: string; harnessSessionId: string; ownerRedactions: readonly OwnerRedaction[] },
+): ElicitRequestFormParams {
+  return {
+    mode: "form",
+    message: [
+      `The scanner findings and publication settings for session ${input.harnessSessionId} are approved.`,
+      "Anything else you'd like redacted that the scanner didn't flag?",
+      "Add internal project names, personal names, hostnames, URLs, or other sensitive text. Leave the field blank and confirm to proceed without additional redactions.",
+    ].join("\n\n"),
+    requestedSchema: {
+      type: "object",
+      properties: {
+        additionalRedactions: {
+          type: "string",
+          title: "Additional redactions (optional)",
+          description: 'One item per line: text to redact, or "text -> replacement" for a custom replacement (default replacement is [REDACTED]). Applied to every scannable native source and publication metadata occurrence, matched case-insensitively.',
+          default: ownerRedactionsText(input.ownerRedactions),
+        },
+        confirmAdditionalRedactions: {
+          type: "boolean",
+          title: "I reviewed additional redactions and want to continue",
+          default: false,
+        },
+      },
+      required: ["additionalRedactions", "confirmAdditionalRedactions"],
     },
   };
 }
@@ -152,6 +174,7 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
       }
       let ownerRedactions = [...(input.ownerRedactions ?? [])];
       let sourceFindings = scanNativeCapture(archive, captureId, ownerRedactions);
+      const requiresAdditionalRedactionReview = sourceFindings.some((finding) => !finding.manualReview);
       const sourceFindingIds = new Set(sourceFindings.map((finding) => finding.id));
       const pendingWarnings = sourceFindings.filter((finding) => finding.manualReview &&
         !(input.resolutions ?? []).some((resolution) => resolution.findingId === finding.id));
@@ -186,37 +209,31 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
         };
         const request = saveConfirmation({
           ...proposal, harnessSessionId: archive.harnessSessionId, requiresWarning: pendingWarnings.length > 0,
-          ownerRedactions,
         });
         const confirmation = input.interactionMode === "noninteractive"
           ? { action: "accept" as const, content: { ...candidate, audience: audienceText(audiencePolicy),
-            expiration: expirationText(expiresAt), additionalRedactions: ownerRedactionsText(ownerRedactions),
-            confirmPublish: true, acknowledgeWarning: true } }
+            expiration: expirationText(expiresAt), confirmPublish: true, acknowledgeWarning: true } }
           : await deps.confirm(request);
         if (confirmation === undefined) {
           return response({
             status: "confirmation-required", captureId, reviewPath, proposal, confirmation: request,
             findings: pendingWarnings,
-            instructions: "No upload occurred. Show this filled-in proposal and collect explicit confirmation and warning acknowledgment in plain text or the supplied primitive form. Do not ask for the native ID, create a blank metadata form, or prepare another capture. Then call publish_session with this captureId, the approved values, and explicit finding resolutions.",
+            instructions: "No upload occurred. Show this filled-in proposal and collect explicit confirmation and warning acknowledgment in plain text or the supplied primitive form. Then separately ask whether anything else should be redacted that the scanner did not flag, collect exact-text rules or an explicit no-more-redactions decision, and call publish_session with this captureId, the approved values, explicit finding resolutions, and additionalRedactionsConfirmed:true. Do not ask for the native ID, create a blank metadata form, or prepare another capture.",
           });
         }
         if (confirmation.action !== "accept") return response({ status: "cancelled", captureId, message: "Nothing was uploaded; the local capture remains available." });
         const content = confirmation.content;
         if (typeof content?.title !== "string" || typeof content.summary !== "string" ||
-            typeof content.audience !== "string" || typeof content.expiration !== "string" ||
-            typeof content.additionalRedactions !== "string") {
-          throw new NativeCaptureError("INVALID_CONFIRMATION", "Confirmation must contain the proposed or edited title, summary, audience, expiration and additional redactions.");
+            typeof content.audience !== "string" || typeof content.expiration !== "string") {
+          throw new NativeCaptureError("INVALID_CONFIRMATION", "Confirmation must contain the proposed or edited title, summary, audience, and expiration.");
         }
         const edited = { title: content.title, summary: content.summary };
         const editedAudience = content.audience === audienceText(audiencePolicy) ? audiencePolicy : parseAudienceText(content.audience);
         const editedExpiration = content.expiration === expirationText(expiresAt) ? expiresAt : parseExpiration(content.expiration);
-        const editedOwnerRedactions = content.additionalRedactions === ownerRedactionsText(ownerRedactions)
-          ? ownerRedactions : parseOwnerRedactions(content.additionalRedactions);
         metadata(edited);
         const metadataChanged = edited.title !== candidate.title || edited.summary !== candidate.summary;
         const settingsChanged = metadataChanged ||
-          audienceText(editedAudience) !== audienceText(audiencePolicy) || editedExpiration !== expiresAt ||
-          ownerRedactionsText(editedOwnerRedactions) !== ownerRedactionsText(ownerRedactions);
+          audienceText(editedAudience) !== audienceText(audiencePolicy) || editedExpiration !== expiresAt;
         if (settingsChanged) {
           if (metadataChanged) {
             resolutions = resolutions.filter((resolution) => sourceFindingIds.has(resolution.findingId));
@@ -224,7 +241,6 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
           candidate = edited;
           audiencePolicy = editedAudience;
           expiresAt = editedExpiration;
-          ownerRedactions = editedOwnerRedactions;
           sourceFindings = scanNativeCapture(archive, captureId, ownerRedactions);
           resolutions = resolutions.filter((resolution) =>
             sourceFindings.some((finding) => finding.id === resolution.findingId));
@@ -251,7 +267,69 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
             instructions: "Keep this exact reviewed proposal, including edited access/expiry. Do not revert to the initial draft or switch to noninteractive. Continue confirmation with the same captureId.",
           });
         }
-        const confirmedRequest: PublishToolInput = { ...proposal, resolutions, confirmed: true };
+        let additionalRedactionsConfirmed: true | undefined;
+        if (input.interactionMode === "interactive" && requiresAdditionalRedactionReview) {
+          const additionalRedactionRequest = additionalRedactionConfirmation({
+            captureId,
+            harnessSessionId: archive.harnessSessionId,
+            ownerRedactions,
+          });
+          const additionalRedactionConfirmationResult = await deps.confirm(additionalRedactionRequest);
+          if (additionalRedactionConfirmationResult === undefined) {
+            return response({
+              status: "confirmation-required",
+              stage: "additional-redactions",
+              captureId,
+              proposal,
+              confirmation: additionalRedactionRequest,
+              instructions: "No upload occurred. Present this distinct additional-redaction prompt after the scanner finding decision, then call publish_session with the same captureId and additionalRedactionsConfirmed:true.",
+            });
+          }
+          if (additionalRedactionConfirmationResult.action !== "accept") {
+            return response({ status: "cancelled", captureId, message: "Nothing was uploaded; the local capture remains available." });
+          }
+          const additionalRedactionContent = additionalRedactionConfirmationResult.content;
+          if (typeof additionalRedactionContent?.additionalRedactions !== "string" ||
+              additionalRedactionContent.confirmAdditionalRedactions !== true) {
+            return response({
+              status: "confirmation-required",
+              stage: "additional-redactions",
+              captureId,
+              proposal,
+              confirmation: additionalRedactionRequest,
+              message: "Nothing was uploaded. Confirm the distinct additional-redaction review to continue.",
+            });
+          }
+          ownerRedactions = parseOwnerRedactions(additionalRedactionContent.additionalRedactions);
+          sourceFindings = scanNativeCapture(archive, captureId, ownerRedactions);
+          resolutions = resolutions.filter((resolution) =>
+            sourceFindings.some((finding) => finding.id === resolution.findingId));
+          const additionalRedactionReview = await deps.captures.review(
+            captureId,
+            resolutions,
+            candidate,
+            ownerRedactions,
+          );
+          candidate = {
+            title: additionalRedactionReview.title,
+            summary: additionalRedactionReview.summary,
+          };
+          metadata(candidate);
+          proposal = {
+            captureId,
+            ...candidate,
+            audiencePolicy,
+            ...(expiresAt === undefined ? {} : { expiresAt }),
+            ...(ownerRedactions.length === 0 ? {} : { ownerRedactions }),
+          };
+          additionalRedactionsConfirmed = true;
+        }
+        const confirmedRequest: PublishToolInput = {
+          ...proposal,
+          resolutions,
+          confirmed: true,
+          ...(additionalRedactionsConfirmed === undefined ? {} : { additionalRedactionsConfirmed }),
+        };
         const result = await deps.publish(confirmedRequest);
         if (result.isError) {
           return { ...result, content: [...result.content, {

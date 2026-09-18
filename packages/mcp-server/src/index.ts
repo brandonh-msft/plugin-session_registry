@@ -70,6 +70,7 @@ import {
   derivePublicationContentDecisions,
   resolveReviewedFindings,
   safeReviewText,
+  scanNativeCapture,
   type CaptureResolution,
 } from "./native/review.js";
 
@@ -125,6 +126,7 @@ export interface PublishToolInput {
   readonly title: string;
   readonly summary: string;
   readonly confirmed: true;
+  readonly additionalRedactionsConfirmed?: true;
   readonly audiencePolicy?: AudiencePolicy;
   readonly expiresAt?: string | null;
 }
@@ -174,8 +176,16 @@ export function createPublishHandler(
   return async (input: PublishToolInput) => {
     const idempotencyKey = confirmedRequestKey(input);
     try {
-      if (!input.confirmed) throw new Error("Owner confirmation is required before publication.");
+      if (!input.confirmed) {
+        throw new Error("Owner confirmation is required before publication.");
+      }
       const audiencePolicy = audiencePolicySchema.parse(input.audiencePolicy);
+      const { archive } = await captures.load(input.captureId);
+      const scannerFoundSecrets = scanNativeCapture(archive, input.captureId, input.ownerRedactions)
+        .some((finding) => !finding.manualReview);
+      if (scannerFoundSecrets && !input.additionalRedactionsConfirmed) {
+        throw new Error("A separate additional-redaction review is required after resolving scanner findings.");
+      }
       // Stages the exact bytes that will be uploaded next to the original
       // capture. A retry of this same confirmed request re-sends that staged
       // file rather than re-capturing and re-redacting the session.
@@ -440,9 +450,9 @@ export function createServer(
         "Preferred tool for 'save this session', 'publish this session' or 'share this session'. " +
         "Call this BEFORE asking the user for information. YOU generate title and summary from approved conversation content; do not ask the owner to author them. " +
         "For Copilot the server uses the runtime's COPILOT_AGENT_SESSION_ID and verifies its native journal automatically. Otherwise pass sourcePath or sessionDirectory from harness context, or workingDirectory and exact distinctive recentUserMessage. Never ask the owner to find their session. " +
-        "Captures full native state, scans it, presents a server-built prefilled confirmation with Anyone (anonymous)/14 days by default, then publishes and returns the link. " +
+        "Captures full native state, scans it, collects the scanner finding decision and publication confirmation, then, when scanner findings exist, presents a distinct additional-redaction prompt before publishing and returning the link. " +
         "Set interactionMode to noninteractive ONLY when running headlessly with no possible further chat turn (Copilot -p, Claude --print, Codex exec): the user's publish prompt authorizes generated metadata, requested settings or defaults, owner-requested exact-text redactions, and the native-package warning without a form. Detected secrets not covered by an owner redaction still need explicit owner resolutions. " +
-        "Set interactive when the user can respond, which includes every slash command and chat message in a live session \u2014 even a terse one like '/publish-session' or 'just publish it, this is a demo'. Never infer noninteractive from an explicit, urgent, or terse request; only the literal absence of a further chat turn (a flag-invoked headless process) justifies it. In interactive mode all settings MUST be shown in one prefilled confirmation and explicitly confirmed by the owner before any upload \u2014 this mandatory questionnaire step can never be skipped, auto-approved, or inferred from the original publish request. Never switch a cancelled interactive request to noninteractive. Do NOT construct an ask_user schema. " +
+        "Set interactive when the user can respond, which includes every slash command and chat message in a live session \u2014 even a terse one like '/publish-session' or 'just publish it, this is a demo'. Never infer noninteractive from an explicit, urgent, or terse request; only the literal absence of a further chat turn (a flag-invoked headless process) justifies it. In interactive mode all settings MUST be shown in a prefilled confirmation and explicitly confirmed by the owner before any upload. When scanner findings are reported, the owner MUST then receive a distinct additional-redaction prompt after the scanner decision and before publication. Neither mandatory step can be skipped, auto-approved, or inferred from the original publish request. Never switch a cancelled interactive request to noninteractive. Do NOT construct an ask_user schema. " +
         "If a previous call returned captureId, reuse it; after an unknown publication result retry publish_session, never recapture.",
       inputSchema: z.object({
         ...sourceSelectionShape,
@@ -548,6 +558,9 @@ export function createServer(
         ),
         confirmed: z.literal(true).describe(
           "True only after the owner has confirmed the captured source, finding resolutions, title, summary, audience, and expiration, and acknowledged that automated detection is incomplete.",
+        ),
+        additionalRedactionsConfirmed: z.literal(true).optional().describe(
+          "True only after the owner receives a distinct prompt after accepting or editing scanner findings: 'Anything else you'd like redacted that the scanner didn't flag?' The owner may add exact-text rules or explicitly proceed with none. This is separate from confirmed and is required before publication when scanner findings exist.",
         ),
         audiencePolicy: audiencePolicySchema.describe(
           "Access defaults to Anyone (anonymous) when omitted. Show this default in the filled-in publish confirmation; do not ask a separate audience question. Preserve an explicitly chosen authenticated policy and require its rules.",

@@ -245,6 +245,8 @@ describe("full-fidelity publication contract renderings", () => {
     expect(guidance).toMatch(/generic request to publish is not confirmation/i);
     expect(guidance).toMatch(/only a local capture.*do not initiate publication/i);
     expect(guidance).toMatch(/independently scanned.*reconfirm changed interactive values/i);
+    expect(guidance).toMatch(/distinct additional-redaction prompt.*before publication/i);
+    expect(guidance).toMatch(/explicitly proceed with none/i);
     expect(FULL_FIDELITY_PUBLISH_PROMPT_CHECKLIST).toContain(FULL_FIDELITY_SAVE_WORKFLOW);
     expect(FULL_FIDELITY_SAVE_WORKFLOW).toContain("save_session BEFORE asking");
     expect(FULL_FIDELITY_SAVE_WORKFLOW).toContain("recentUserMessage");
