@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "session-registry": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["./scripts/mcp-server.mjs"],
+      "timeout": 900000,
+      "env": {
+        "SESSION_REGISTRY_API_URL": "http://localhost:8080",
+        "SESSION_REGISTRY_TOKEN": "localdev-user"
+      }
+    }
+  }
+}

@@ -17,6 +17,7 @@ import {
 import {
   NativeCaptureError,
   NativeFiles,
+  isForeignAbsolute,
   isMissingFile,
   isNativeObject,
   isWithin,
@@ -409,7 +410,9 @@ export async function captureNativeSession(
           ? join(dirname(primary.absolutePath), input.harnessSessionId)
           : selected.root;
       const absolute = dependencyMappings.get(reference) ??
-        (isAbsolute(reference) ? resolve(reference) : resolve(referenceRoot, reference));
+        (isAbsolute(reference)
+          ? resolve(reference)
+          : isForeignAbsolute(reference) ? reference : resolve(referenceRoot, reference));
       if (dependencyMappings.has(reference) || explicitDependencies.has(absolute)) {
         const root = dirname(absolute);
         if (relative(root, await realpath(root)) !== "") {
