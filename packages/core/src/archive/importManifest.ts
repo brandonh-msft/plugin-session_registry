@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { zstdDecompressSync } from "node:zlib";
 import {
   NATIVE_HARNESSES,
+  MAX_NATIVE_ARCHIVE_FILE_BYTES,
   NATIVE_SESSION_ARCHIVE_FORMAT,
   NATIVE_SESSION_BUNDLE_POLICY,
   type NativeCaptureManifest,
@@ -256,9 +257,11 @@ export function validateImportManifest(
       let contentBytes = entry.bytes;
       if (file.nativeEncoding === "zstd") {
         try {
-          contentBytes = zstdDecompressSync(entry.bytes);
+          contentBytes = zstdDecompressSync(entry.bytes, {
+            maxOutputLength: MAX_NATIVE_ARCHIVE_FILE_BYTES,
+          });
         } catch {
-          throw new ImportError("IMPORT_HASH_MISMATCH", `${file.path}: compressed content cannot be verified.`);
+          throw new ImportError("IMPORT_LIMIT_EXCEEDED", `${file.path}: compressed content exceeds the import limit or cannot be verified.`);
         }
       }
       const contentSha256 = createHash("sha256").update(contentBytes).digest("hex");

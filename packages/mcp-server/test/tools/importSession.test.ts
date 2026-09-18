@@ -104,6 +104,28 @@ describe("createImportSessionHandlers", () => {
     }
   });
 
+  it("reserves the only import slot before confirmation and leaves no second workspace", async () => {
+    const root = await fixtureRoot();
+    const source = await bundleFile(root);
+    let resolveConfirmation!: (value: { readonly action: "accept"; readonly content: { readonly confirmImport: true } }) => void;
+    const confirmation = new Promise<{ readonly action: "accept"; readonly content: { readonly confirmImport: true } }>((resolve) => {
+      resolveConfirmation = resolve;
+    });
+    const confirm = vi.fn(async () => confirmation);
+    const value = createImportSessionHandlers({
+      confirm,
+      createWorkspace: (options) => createImportWorkspace({ ...options, importsRoot: join(root, "imports") }),
+    });
+
+    const first = value.importBundle({ bundlePath: source });
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    const second = text(await value.importBundle({ bundlePath: source }));
+    expect(second.code).toBe("IMPORT_ALREADY_ACTIVE");
+    resolveConfirmation({ action: "accept", content: { confirmImport: true } });
+    await first;
+    expect((await readdir(join(root, "imports"))).filter((name) => !name.startsWith("."))).toHaveLength(1);
+  });
+
   it("varies the one prompt for security-edited bundles without exposing malicious manifest values", async () => {
     const root = await fixtureRoot();
     const source = await bundleFile(root, {

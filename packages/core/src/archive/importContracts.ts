@@ -129,20 +129,30 @@ export class ImportCoordinator {
     releaseWorkspace: (handle: ImportHandle) => Promise<void> | void = () => undefined,
   ): Promise<ImportSession> {
     const active = this.requireActive(handle);
-    if (active.closePromise !== undefined) return active.closePromise.then(() => ({ handle, lifecycle: "closed" }));
+    if (active.closePromise !== undefined) {
+      await active.closePromise;
+      return { handle: active.handle, lifecycle: "closed" };
+    }
 
     active.lifecycle = "closed";
-    active.closePromise = new Promise<void>((resolve) => {
+    const drained = new Promise<void>((resolve) => {
       active.resolveClose = resolve;
     });
-    const drain = active.inFlightReads === 0
-      ? (active.resolveClose!(), Promise.resolve())
-      : active.closePromise;
-    await drain;
-    await releaseWorkspace(active.handle);
-    this.active = undefined;
-    this.closedHandles.set(active.handle.id, active.handle);
-    return { handle: active.handle, lifecycle: "closed" };
+    active.closePromise = (async () => {
+      if (active.inFlightReads === 0) active.resolveClose!();
+      await drained;
+      await releaseWorkspace(active.handle);
+      this.active = undefined;
+      this.closedHandles.set(active.handle.id, active.handle);
+    })();
+
+    try {
+      await active.closePromise;
+      return { handle: active.handle, lifecycle: "closed" };
+    } catch (error) {
+      active.closePromise = undefined;
+      throw error;
+    }
   }
 
   public session(handle: ImportHandle): ImportSession {

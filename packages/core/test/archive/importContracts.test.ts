@@ -70,6 +70,25 @@ describe("import contracts", () => {
     expect(released).toBe(true);
   });
 
+  it("retries workspace release after a failed close instead of wedging future imports", async () => {
+    const coordinator = new ImportCoordinator();
+    coordinator.beginImport(handle);
+    coordinator.markReady(handle);
+    let attempts = 0;
+    const release = () => {
+      attempts++;
+      if (attempts === 1) throw new Error("cleanup failed");
+    };
+
+    await expect(coordinator.closeImport(handle, release)).rejects.toThrow("cleanup failed");
+    expect(() => coordinator.beginImport(createImportHandle("opaque-2", "b".repeat(64), 1, "/private/import-2")))
+      .toThrowError(expect.objectContaining({ code: "IMPORT_ALREADY_ACTIVE" }));
+
+    await expect(coordinator.closeImport(handle, release)).resolves.toMatchObject({ lifecycle: "closed" });
+    expect(() => coordinator.beginImport(createImportHandle("opaque-2", "b".repeat(64), 1, "/private/import-2")))
+      .not.toThrow();
+  });
+
   it("keeps slice outcomes discriminated and excludes semantic judgments", () => {
     const outcomes: SliceOutcome[] = [
       {

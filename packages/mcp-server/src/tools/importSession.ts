@@ -153,6 +153,7 @@ export function createImportSessionHandlers(deps: ImportSessionDependencies) {
   const cleanupWorkspace = deps.cleanupWorkspace ?? cleanupImportWorkspace;
   const briefing = deps.briefing ?? readHarnessProjection;
   const handles = new Map<string, ImportHandle>();
+  let importReserved = false;
 
   const release = async (handle: ImportHandle): Promise<void> => {
     const cleanup = await cleanupWorkspace(handle.workspacePath);
@@ -167,8 +168,11 @@ export function createImportSessionHandlers(deps: ImportSessionDependencies) {
       const loaded = await loadBundle(input.bundlePath);
       const entries = await readBundle(loaded.bytes);
       const metadata = validateManifest(entries);
+      if (importReserved) throw new ImportError("IMPORT_ALREADY_ACTIVE");
+      importReserved = true;
       const confirmation = await deps.confirm(importConfirmation(metadata));
       if (confirmation?.action !== "accept" || confirmation.content?.confirmImport !== true) {
+        importReserved = false;
         return result({
           code: "IMPORT_CONSENT_REQUIRED",
           message: "Import terminated without consent. No files were written; re-run in an interactive client and explicitly confirm the risk.",
@@ -179,6 +183,7 @@ export function createImportSessionHandlers(deps: ImportSessionDependencies) {
       workspace = await createWorkspace({ handleId: handle.id, bundleSha256: handle.bundleSha256 });
       handle = createImportHandle(handle.id, loaded.sha256, loaded.byteLength, workspace.path);
       coordinator.beginImport(handle);
+      importReserved = false;
       await verifyUnchanged(input.bundlePath, { sha256: loaded.sha256, byteLength: loaded.byteLength });
       const files = metadata.files.map((file) => {
         const entry = entries.get(file.path);
@@ -216,11 +221,12 @@ export function createImportSessionHandlers(deps: ImportSessionDependencies) {
         try {
           await coordinator.closeImport(handle, release);
         } catch {
-          // Preserve the original import failure; cleanup is best-effort here.
+          if (workspace !== undefined) await cleanupWorkspace(workspace.path);
         }
       } else if (workspace !== undefined) {
         await cleanupWorkspace(workspace.path);
       }
+      importReserved = false;
       return importFailure(error);
     }
   };
