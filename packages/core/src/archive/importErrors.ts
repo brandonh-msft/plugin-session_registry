@@ -29,7 +29,7 @@ const definitions: readonly ImportErrorDefinition[] = [
   { code: "IMPORT_NOT_A_BUNDLE", remediation: "Re-download the session bundle and retry the import." },
   { code: "IMPORT_UNSUPPORTED_ZIP", remediation: "Ask the owner to republish a supported session bundle." },
   { code: "IMPORT_LIMIT_EXCEEDED", remediation: "Use a smaller session bundle." },
-  { code: "IMPORT_MANIFEST_MISSING", remediation: "Ask the owner to republish the bundle with its manifest." },
+  { code: "IMPORT_MANIFEST_MISSING", remediation: "This V2 bundle predates verifiable manifests; re-download or ask the owner to republish it." },
   { code: "IMPORT_MANIFEST_INVALID", remediation: "Re-download the session bundle and retry the import." },
   { code: "IMPORT_ENTRY_MISMATCH", remediation: "Re-download the session bundle and retry the import." },
   { code: "IMPORT_UNSAFE_NAME", remediation: "Do not trust this file; obtain a fresh session bundle." },

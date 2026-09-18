@@ -9,4 +9,6 @@ export * from "./archive/nativeSessionBundle.js";
 export * from "./archive/importErrors.js";
 export * from "./archive/importContracts.js";
 export * from "./archive/nativeSessionBundleReader.js";
+export * from "./archive/importManifest.js";
+export * from "./archive/jsonPrecision.js";
 export * from "./contracts/fullFidelityPublicationContract.js";
