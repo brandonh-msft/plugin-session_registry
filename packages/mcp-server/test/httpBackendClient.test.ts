@@ -28,6 +28,7 @@ const SUBMISSION: PublishSubmission = {
 const ANONYMOUS_SHARE: ShareLinkRequest = {
   audiencePolicy: { accessMode: "anonymous" },
 };
+const PUBLICATION_KEY = "publication-key-1";
 
 function uploaderStub(): ContentUploader & { uploads: string[] } {
   const uploads: string[] = [];
@@ -165,7 +166,12 @@ describe("createHttpBackendClient", () => {
       fetch: fetchMock as unknown as typeof fetch,
     });
 
-    const result = await client.submitAndCreateLink(SUBMISSION, ANONYMOUS_SHARE, "key-1");
+    const result = await client.submitAndCreateLink(
+      SUBMISSION,
+      ANONYMOUS_SHARE,
+      "key-1",
+      PUBLICATION_KEY,
+    );
 
     expect(result).toEqual({
       sessionId: "s1",
@@ -185,6 +191,7 @@ describe("createHttpBackendClient", () => {
       harnessSessionId: "hs1",
       title: "A session",
       idempotencyKey: "key-1",
+      publicationKey: PUBLICATION_KEY,
       transcriptPointer: { containerName: "sessions", blobKey: "blob_1" },
       artifactPointers: [{ containerName: "sessions", blobKey: "blob_2" }],
       audiencePolicy: { accessMode: "anonymous" },

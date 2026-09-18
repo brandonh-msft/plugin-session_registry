@@ -29,7 +29,9 @@ import {
   FULL_FIDELITY_PUBLISH_PROMPT_CHECKLIST,
   FULL_FIDELITY_PUBLISH_TOOL_DESCRIPTION,
   NATIVE_HARNESSES,
+  computePublicationKey,
   type AudiencePolicy,
+  type PublicationExpirationChoice,
 } from "@session-registry/core";
 import {
   publishAndShareSession,
@@ -47,6 +49,7 @@ import type { OwnerRedaction } from "./native/review.js";
 import { audiencePolicySchema, audienceText } from "./audiencePolicy.js";
 import {
   CaptureReviewRequiredError,
+  derivePublicationContentDecisions,
   resolveReviewedFindings,
   safeReviewText,
   type CaptureResolution,
@@ -161,6 +164,20 @@ export function createPublishHandler(
           transcript: capture.content,
           artifacts: [],
           harness: capture.archive.harness,
+          publicationKey: computePublicationKey({
+            title: capture.title,
+            summary: capture.summary,
+            audiencePolicy,
+            expiresAtChoice: publicationExpirationChoice(input.expiresAt),
+            ownerRedactions: input.ownerRedactions ?? [],
+            contentDecisions: derivePublicationContentDecisions(
+              capture.archive,
+              input.captureId,
+              { title: capture.title, summary: capture.summary },
+              input.ownerRedactions,
+              input.resolutions,
+            ),
+          }),
           share: {
             audiencePolicy,
             ...(input.expiresAt === undefined
@@ -287,6 +304,18 @@ export function createPublishHandler(
       };
     }
   };
+}
+
+function publicationExpirationChoice(
+  value: PublishToolInput["expiresAt"],
+): PublicationExpirationChoice {
+  if (value === undefined) {
+    return "default";
+  }
+  if (value === null) {
+    return "never";
+  }
+  return new Date(value);
 }
 
 function confirmedRequestKey(input: PublishToolInput): string {

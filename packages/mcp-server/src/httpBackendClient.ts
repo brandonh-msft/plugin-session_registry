@@ -133,6 +133,7 @@ export function createHttpBackendClient(
       submission: PublishSubmission,
       share: ShareLinkRequest,
       idempotencyKey: string,
+      publicationKey: string,
     ): Promise<PublishAndShareResult> {
       if (parseNativeSessionArchiveView(submission.transcript) !== null) {
         throw new NativeSessionArchiveError("A readable projection is not a native publication source. Use the complete owner-approved capture.");
@@ -191,6 +192,7 @@ export function createHttpBackendClient(
             ? {}
             : { expiresAt: share.expiresAt === null ? null : share.expiresAt.toISOString() }),
           idempotencyKey,
+          publicationKey,
         }),
         });
           break;
