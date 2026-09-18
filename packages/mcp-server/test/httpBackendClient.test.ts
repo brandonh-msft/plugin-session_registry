@@ -19,6 +19,7 @@ import {
   PurgeSessionRequestFailedError,
   type PurgeSessionResult,
 } from "../src/tools/purgeSession.js";
+import { GetShareCardNotFoundError } from "../src/tools/getShareCard.js";
 
 const SUBMISSION: PublishSubmission = {
   ownerGithubLogin: "octocat",
@@ -731,6 +732,53 @@ describe("createHttpBackendClient", () => {
 
     await expect(client.listTombstonedSessions()).rejects.toThrow(
       PurgeSessionRequestFailedError,
+    );
+  });
+
+  it("retrieves an available share card via GET on the link's share-card route", async () => {
+    const fetchMock = vi.fn(async () =>
+      okResponse({ kind: "available", markdown: "### Fix flaky retry test" }, 200),
+    );
+    const client = createHttpBackendClient({
+      baseUrl: "https://registry.example.com",
+      getAccessToken: async () => "token-abc",
+      uploader: uploaderStub(),
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(client.getShareCard("link_1")).resolves.toEqual({
+      kind: "available",
+      markdown: "### Fix flaky retry test",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://registry.example.com/api/links/link_1/share-card");
+    expect(init.method).toBe("GET");
+  });
+
+  it("returns unavailable for a share card the API reports as not currently resolvable", async () => {
+    const fetchMock = vi.fn(async () => okResponse({ kind: "unavailable" }, 200));
+    const client = createHttpBackendClient({
+      baseUrl: "https://registry.example.com",
+      getAccessToken: async () => "token-abc",
+      uploader: uploaderStub(),
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(client.getShareCard("link_1")).resolves.toEqual({ kind: "unavailable" });
+  });
+
+  it("maps a 404 to GetShareCardNotFoundError for a nonexistent or non-owned link", async () => {
+    const fetchMock = vi.fn(async () => okResponse({ error: "not found" }, 404));
+    const client = createHttpBackendClient({
+      baseUrl: "https://registry.example.com",
+      getAccessToken: async () => "token-abc",
+      uploader: uploaderStub(),
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(client.getShareCard("missing-link")).rejects.toThrow(
+      GetShareCardNotFoundError,
     );
   });
 });
