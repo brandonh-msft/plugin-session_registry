@@ -29,6 +29,7 @@ import {
   FULL_FIDELITY_PUBLISH_PROMPT_CHECKLIST,
   FULL_FIDELITY_PUBLISH_TOOL_DESCRIPTION,
   NATIVE_HARNESSES,
+  NATIVE_CLI_HARNESSES,
   computePublicationKey,
   type AudiencePolicy,
   type PublicationExpirationChoice,
@@ -53,6 +54,17 @@ import {
   purgeSessions,
   type BackendListTombstonedSessionsClient,
 } from "./tools/purgeSessions.js";
+import {
+  getShareCard,
+  type BackendGetShareCardClient,
+} from "./tools/getShareCard.js";
+import {
+  prPublishPreference,
+} from "./tools/prPublishPreference.js";
+import {
+  checkPrPublishPreference,
+  recordPrPublishPreference,
+} from "./preferences/prPublishPreference.js";
 import {
   createHttpBackendClient,
   PublishStateUnknownError,
@@ -145,12 +157,14 @@ type SessionRegistryBackendClient = BackendPublishAndShareClient &
   BackendDeleteSessionClient &
   BackendRestoreSessionClient &
   BackendPurgeSessionClient &
-  BackendListTombstonedSessionsClient;
+  BackendListTombstonedSessionsClient &
+  BackendGetShareCardClient;
 type ServerBackendClient = BackendPublishAndShareClient &
   Partial<BackendDeleteSessionClient> &
   Partial<BackendRestoreSessionClient> &
   Partial<BackendPurgeSessionClient> &
-  Partial<BackendListTombstonedSessionsClient>;
+  Partial<BackendListTombstonedSessionsClient> &
+  Partial<BackendGetShareCardClient>;
 
 export function createDefaultBackendClient(
   env: NodeJS.ProcessEnv,
@@ -771,6 +785,74 @@ export function createServer(
     },
   );
 
+  server.registerTool(
+    "pr_publish_preference",
+    {
+      title: "Check or record the PR-publish-prompt preference",
+      description:
+        "Manages the developer's durable opt-out for the PR-publish prompt (\"attach a share card before creating a PR\"). " +
+        "Call action \"check\" before ever showing the 4-choice prompt: if skipScope is \"session\" or \"user\", do not prompt. " +
+        "Call action \"record\" only after the developer explicitly chooses to stop being asked, with scope \"session\" for \"don't ask this session\" or \"user\" for \"don't ask ever\". " +
+        "Never call \"record\" on a plain \"No\" answer -- that only skips the card for this one PR, not future prompts. " +
+        "The flag is stored inside the current harness's own config directory (.copilot, .claude, .codex), not a separate Session Registry folder, so each harness's opt-out is independent.",
+      inputSchema: z.discriminatedUnion("action", [
+        z.object({
+          action: z.literal("check"),
+          workspaceRoot: z.string().min(1).describe("Absolute path to the current workspace/worktree root, used to locate the session-scoped marker file."),
+          harness: z.enum(NATIVE_CLI_HARNESSES).describe("The CLI harness currently running, which selects whose config directory (.copilot/.claude/.codex) backs the flag."),
+        }).strict(),
+        z.object({
+          action: z.literal("record"),
+          workspaceRoot: z.string().min(1).describe("Absolute path to the current workspace/worktree root, used to locate the session-scoped marker file."),
+          harness: z.enum(NATIVE_CLI_HARNESSES).describe("The CLI harness currently running, which selects whose config directory (.copilot/.claude/.codex) backs the flag."),
+          scope: z.enum(["session", "user"]).describe("\"session\" persists only for this worktree; \"user\" persists across every workspace for this developer."),
+        }).strict(),
+      ]),
+    },
+    async (input) => {
+      const result = await prPublishPreference(input, {
+        check: checkPrPublishPreference,
+        record: recordPrPublishPreference,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
+  server.registerTool(
+    "get_share_card",
+    {
+      title: "Get the PR-Ready Share Card for a share link",
+      description:
+        "Returns the copyable PR-Ready Share Card Markdown for a share link the caller owns, for embedding directly into a pull/merge request description. " +
+        "Returns { kind: \"unavailable\" } (not an error) when the link no longer resolves -- e.g. revoked, expired, or the session became inaccessible; callers should proceed without a card in that case rather than retrying or failing.",
+      inputSchema: z.object({
+        linkId: z.string().min(1).describe(
+          "Share link id, e.g. returned by save_session/publish_and_share as linkId.",
+        ),
+      }).strict(),
+    },
+    async (input) => {
+      const result = await getShareCard(input, {
+        backendClient: requireGetShareCardBackendClient(backendClient),
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify(result),
+          },
+        ],
+      };
+    },
+  );
+
   server.registerPrompt(
     "prepare_full_fidelity_publish_session",
     {
@@ -835,6 +917,15 @@ function requirePurgeSessionsBackendClient(
     throw new Error("purge_sessions backend preview client is not configured");
   }
   return backendClient as BackendPurgeSessionClient & BackendListTombstonedSessionsClient;
+}
+
+function requireGetShareCardBackendClient(
+  backendClient: ServerBackendClient,
+): BackendGetShareCardClient {
+  if (typeof backendClient.getShareCard !== "function") {
+    throw new Error("get_share_card backend client is not configured");
+  }
+  return backendClient as BackendGetShareCardClient;
 }
 
 async function main(): Promise<void> {

@@ -62,6 +62,13 @@ import type {
   BackendListTombstonedSessionsClient,
   ListTombstonedSessionsResult,
 } from "./tools/purgeSessions.js";
+import {
+  GetShareCardNotFoundError,
+  GetShareCardRequestFailedError,
+  GetShareCardStateUnknownError,
+  type BackendGetShareCardClient,
+  type ShareCardResult,
+} from "./tools/getShareCard.js";
 
 export interface BlobPointer {
   readonly containerName: string;
@@ -150,6 +157,12 @@ interface PublishAndShareResponseBody {
   readonly error?: string;
 }
 
+interface ShareCardResponseBody {
+  readonly kind?: string;
+  readonly markdown?: string;
+  readonly error?: string;
+}
+
 interface SessionLifecycleResponseBody {
   readonly sessionId?: string;
   readonly outcome?: string;
@@ -189,7 +202,8 @@ export function createHttpBackendClient(
   BackendDeleteSessionClient &
   BackendRestoreSessionClient &
   BackendPurgeSessionClient &
-  BackendListTombstonedSessionsClient {
+  BackendListTombstonedSessionsClient &
+  BackendGetShareCardClient {
   const doFetch = options.fetch ?? globalThis.fetch;
   const sleep = options.sleep ?? defaultSleep;
   const baseUrl = options.baseUrl.replace(/\/+$/, "");
@@ -390,6 +404,38 @@ export function createHttpBackendClient(
         `${baseUrl}/api/sessions/purge-preview`,
         options.getAccessToken,
         doFetch,
+      );
+    },
+    async getShareCard(linkId: string): Promise<ShareCardResult> {
+      let response: JsonResponseLike;
+      try {
+        response = await submitJsonRequest(
+          `${baseUrl}/api/links/${encodeURIComponent(linkId)}/share-card`,
+          "GET",
+          options.getAccessToken,
+          doFetch,
+        );
+      } catch (error) {
+        throw new GetShareCardStateUnknownError(
+          error instanceof Error ? error.message : "request failed",
+        );
+      }
+
+      const body = (await response.json().catch(() => ({}))) as ShareCardResponseBody;
+      if (response.status === 404) {
+        throw new GetShareCardNotFoundError(linkId);
+      }
+      if (!response.ok) {
+        throw new GetShareCardRequestFailedError(response.status, body.error ?? response.statusText);
+      }
+      if (body.kind === "unavailable") {
+        return { kind: "unavailable" };
+      }
+      if (body.kind === "available" && typeof body.markdown === "string" && body.markdown.trim().length > 0) {
+        return { kind: "available", markdown: body.markdown };
+      }
+      throw new GetShareCardStateUnknownError(
+        "response did not include a valid kind and, when available, a non-empty markdown value",
       );
     },
   };
