@@ -206,12 +206,15 @@ export function createHttpBackendClient(
         throw new NativeSessionArchiveError("A readable projection is not a native publication source. Use the complete owner-approved capture.");
       }
       const archive = parseNativeSessionArchive(submission.transcript);
-      const native = archive && hasNativeSessionBundle(archive)
+      if (archive === null) {
+        throw new NativeSessionArchiveError("A native session archive is required. Use the complete owner-approved capture.");
+      }
+      const native = hasNativeSessionBundle(archive)
         ? buildNativeSessionPublication(archive)
         : null;
       const transcriptPointer = await options.uploader.upload(
         native?.content ?? submission.transcript,
-        archive ? "application/json; charset=utf-8" : "text/plain; charset=utf-8",
+        "application/json; charset=utf-8",
         "transcript",
       );
       const artifactPointers: BlobPointer[] = [];

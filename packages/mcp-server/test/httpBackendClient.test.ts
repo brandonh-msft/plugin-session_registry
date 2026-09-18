@@ -23,7 +23,7 @@ import {
 const SUBMISSION: PublishSubmission = {
   ownerGithubLogin: "octocat",
   harnessSessionId: "hs1",
-  transcript: "redacted transcript",
+  transcript: JSON.stringify(nativeArchiveFixture()),
   artifacts: [{ filename: "notes.md", content: "redacted notes" }],
   harness: { name: "test-harness", version: "1.0.0" },
   title: "A session",
@@ -104,7 +104,7 @@ describe("createHttpBackendClient", () => {
     expect(JSON.parse(init.body as string).resumableBundlePointer).toEqual({ containerName: "sessions", blobKey: "resumable-bundle" });
   });
 
-  it.each(["legacy text", JSON.stringify({ ...nativeArchiveFixture(), format: LEGACY_NATIVE_SESSION_ARCHIVE_FORMAT }),
+  it.each([JSON.stringify({ ...nativeArchiveFixture(), format: LEGACY_NATIVE_SESSION_ARCHIVE_FORMAT }),
     JSON.stringify(nativeArchiveFixture())])("keeps nonresumable uploads bundle-less", async (transcript) => {
     const upload = vi.fn<ContentUploader["upload"]>(async () => ({ containerName: "sessions", blobKey: "blob" }));
     const fetchMock = vi.fn(async () => okResponse({ sessionId: "s1", harnessSessionId: "hs1", linkId: "l1", shareUrl: "https://registry.example.com/session/hs1/l1", idempotentReplay: false }));
@@ -185,7 +185,7 @@ describe("createHttpBackendClient", () => {
       shareUrl: "https://registry.example.com/session/hs1/l1",
       idempotentReplay: false,
     });
-    expect(uploader.uploads).toEqual(["redacted transcript", "redacted notes"]);
+    expect(uploader.uploads).toEqual([SUBMISSION.transcript, "redacted notes"]);
     // Exactly one server call: publish and link creation are not separable.
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
