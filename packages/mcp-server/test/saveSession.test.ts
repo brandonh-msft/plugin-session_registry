@@ -24,12 +24,20 @@ afterEach(async () => {
 function accepted(request: ElicitRequest): ElicitResult {
   const params = ElicitRequestFormParamsSchema.parse(request.params);
   const properties = params.requestedSchema.properties;
+  if (!("title" in properties)) {
+    return {
+      action: "accept",
+      content: {
+        additionalRedactions: "default" in properties.additionalRedactions! ? properties.additionalRedactions.default : "",
+        confirmAdditionalRedactions: true,
+      },
+    };
+  }
   return { action: "accept", content: {
     title: "default" in properties.title! ? properties.title.default : "",
     summary: "default" in properties.summary! ? properties.summary.default : "",
     audience: "default" in properties.audience! ? properties.audience.default : "",
     expiration: "default" in properties.expiration! ? properties.expiration.default : "",
-    additionalRedactions: "default" in properties.additionalRedactions! ? properties.additionalRedactions.default : "",
     confirmPublish: true, acknowledgeWarning: true,
   } };
 }
@@ -74,7 +82,7 @@ async function setup(
 }
 
 describe("save-session MCP workflow", () => {
-  it("reproduces the black-holes save with no known UUID or path and only one prefilled confirmation", async () => {
+  it("reproduces the black-holes save with no known UUID or path and distinct confirmations", async () => {
     const run = await setup("github-copilot-cli", accepted);
     try {
       const records = [
@@ -114,9 +122,8 @@ describe("save-session MCP workflow", () => {
       expect(form.requestedSchema.properties.summary).toMatchObject({ type: "string", default: run.draft.summary });
       expect(form.requestedSchema.properties.audience).toMatchObject({ type: "string", default: "anyone" });
       expect(form.requestedSchema.properties.expiration).toMatchObject({ type: "string", default: "14 days" });
-      expect(form.requestedSchema.properties.additionalRedactions).toMatchObject({ type: "string", default: "" });
       expect(Object.keys(form.requestedSchema.properties)).toEqual([
-        "title", "summary", "audience", "expiration", "additionalRedactions", "confirmPublish", "acknowledgeWarning",
+        "title", "summary", "audience", "expiration", "confirmPublish", "acknowledgeWarning",
       ]);
       expect(form.requestedSchema.required).toEqual([
         "title", "summary", "audience", "expiration", "confirmPublish", "acknowledgeWarning",
@@ -219,11 +226,11 @@ describe("save-session MCP workflow", () => {
     } finally { await run.close(); }
   });
 
-  it("lets the owner add exact-text redactions in the interactive confirmation", async () => {
+  it("asks for and applies owner redactions after scanner findings are accepted", async () => {
     let calls = 0;
     const run = await setup("github-copilot-cli", (request) => {
       const answer = accepted(request);
-      if (++calls === 1) {
+      if (++calls === 2) {
         return { ...answer, content: {
           ...answer.content,
           additionalRedactions: "private-handle -> [PRIVATE]",
@@ -231,13 +238,32 @@ describe("save-session MCP workflow", () => {
       }
       return answer;
     });
+    const token = `ghp_${"x".repeat(36)}`;
     await appendFile(run.fixture.primary, JSON.stringify({
-      type: "assistant.message", data: { content: "Do not publish private-handle." },
+      type: "assistant.message", data: { content: `Do not publish private-handle or ${token}.` },
     }) + "\n");
     try {
-      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      const reviewRequired = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      const reviewBlock = reviewRequired.content[0];
+      if (reviewBlock?.type !== "text") throw new Error("Expected scanner findings");
+      const review = JSON.parse(reviewBlock.text);
+      expect(review.status).toBe("review-required");
+      expect(run.confirmations).toHaveLength(0);
+      const result = await run.client.callTool({
+        name: "save_session",
+        arguments: {
+          ...run.draft,
+          captureId: review.captureId,
+          resolutions: review.findings.map((finding: { id: string }) => ({
+            findingId: finding.id,
+            action: { kind: "accept-redaction" },
+          })),
+        },
+      });
       expect(result.isError).not.toBe(true);
-      expect(run.confirmations).toHaveLength(1);
+      expect(run.confirmations).toHaveLength(2);
+      const additionalRedactionForm = ElicitRequestFormParamsSchema.parse(run.confirmations[1]!.params);
+      expect(additionalRedactionForm.message).toContain("Anything else you'd like redacted that the scanner didn't flag?");
       expect(parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.content).toContain("[PRIVATE]");
       expect(parseNativeSessionArchive(run.submissions[0]!.transcript)?.redactions
         .some((redaction) => redaction.category === "owner-requested")).toBe(true);
@@ -247,7 +273,7 @@ describe("save-session MCP workflow", () => {
         publicationSettings: {
           audience: "anyone",
           ownerRequestedRedactionCount: 1,
-          appliedRedactionCount: 1,
+          appliedRedactionCount: 2,
         },
       });
       expect(receipt.text).not.toContain("private-handle");
@@ -258,7 +284,7 @@ describe("save-session MCP workflow", () => {
     let calls = 0;
     const run = await setup("github-copilot-cli", (request) => {
       const answer = accepted(request);
-      if (++calls === 1) {
+      if (++calls === 2) {
         return { ...answer, content: {
           ...answer.content,
           additionalRedactions: "\nalpha-secret\nbeta-name -> [BETA]\n\n  gamma-token  \n",
@@ -266,12 +292,28 @@ describe("save-session MCP workflow", () => {
       }
       return answer;
     });
+    const token = `ghp_${"x".repeat(36)}`;
     await appendFile(run.fixture.primary, JSON.stringify({
-      type: "assistant.message", data: { content: "alpha-secret, beta-name, and gamma-token must all disappear." },
+      type: "assistant.message", data: { content: `alpha-secret, beta-name, gamma-token, and ${token} must all disappear.` },
     }) + "\n");
     try {
-      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      const reviewRequired = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      const reviewBlock = reviewRequired.content[0];
+      if (reviewBlock?.type !== "text") throw new Error("Expected scanner findings");
+      const review = JSON.parse(reviewBlock.text);
+      const result = await run.client.callTool({
+        name: "save_session",
+        arguments: {
+          ...run.draft,
+          captureId: review.captureId,
+          resolutions: review.findings.map((finding: { id: string }) => ({
+            findingId: finding.id,
+            action: { kind: "accept-redaction" },
+          })),
+        },
+      });
       expect(result.isError).not.toBe(true);
+      expect(run.confirmations).toHaveLength(2);
       const content = parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.content;
       expect(content).toContain("[REDACTED]");
       expect(content).toContain("[BETA]");

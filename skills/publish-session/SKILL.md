@@ -109,6 +109,16 @@ If findings are reported, require explicit owner decisions:
 
 Unresolved detected secrets block upload. Never silently redact, ignore, or declare false positives on behalf of the owner.
 
+After the owner accepts or edits the scanner findings, ask a **separate, mandatory**
+question before publication: **"Anything else you'd like redacted that the scanner didn't
+flag?"** Do not combine this with the scanner-findings decision or metadata confirmation.
+Let the owner provide free text, exact strings, or replacements for internal project names,
+personal names, hostnames, URLs, or other sensitive content; also let them explicitly say
+that there is nothing more to redact. Convert each supplied target into an exact-text
+owner redaction and apply it to every scannable native source and publication metadata
+occurrence before calling `publish_session`. In an interactive session, never publish until
+this distinct additional-redaction decision has occurred.
+
 ## Phase 4: Metadata and Policy Drafting
 
 Generate publish metadata before calling the MCP tool:
