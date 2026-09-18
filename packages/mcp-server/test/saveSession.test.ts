@@ -440,6 +440,11 @@ describe("save-session MCP workflow", () => {
       expect(decisionForm.message).toContain("(appears in 3 places)");
       // Only one itemized line, not three.
       expect(decisionForm.message).not.toContain("2. [");
+      const recap = ElicitRequestFormParamsSchema.parse(run.confirmations[2]!.params);
+      // The owner only ever confirmed one decision for the single unique
+      // value, so the recap must state both the raw occurrence count and
+      // the unique-value count it was actually decided against.
+      expect(recap.message).toContain("Secrets: 3 detected secret instances (1 unique) will be redacted.");
     } finally { await run.close(); }
   });
 
@@ -464,6 +469,8 @@ describe("save-session MCP workflow", () => {
       const perFinding = ElicitRequestFormParamsSchema.parse(run.confirmations[1]!.params);
       expect(perFinding.message).toContain("Finding 1 of 1 unique value");
       expect(perFinding.message).toContain("This exact value appears in 2 places; your decision applies to all of them.");
+      const recap = ElicitRequestFormParamsSchema.parse(run.confirmations[3]!.params);
+      expect(recap.message).toContain("Secrets: 2 detected secret instances (1 unique) were reviewed individually and resolved.");
       const content = parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.content;
       expect(content).not.toContain(token);
       expect(content?.match(/\[REDACTED\]/g)).toHaveLength(2);

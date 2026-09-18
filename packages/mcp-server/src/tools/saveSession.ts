@@ -307,9 +307,15 @@ function metadataForm(
   };
 }
 
-function secretDecisionSummary(decision: SecretDecision | undefined, textFindingCount: number): string {
+/**
+ * The owner only ever confirmed one decision per unique value (dedup), so
+ * the recap must never imply otherwise: it always states the raw
+ * occurrence count alongside the unique-value count it was actually
+ * decided against.
+ */
+function secretDecisionSummary(decision: SecretDecision | undefined, textFindingCount: number, uniqueFindingCount: number): string {
   if (textFindingCount === 0) return "The scanner found no likely secrets.";
-  const noun = `${textFindingCount} detected secret${textFindingCount === 1 ? "" : "s"}`;
+  const noun = `${textFindingCount} detected secret instance${textFindingCount === 1 ? "" : "s"} (${uniqueFindingCount} unique)`;
   switch (decision) {
     case "redact-all": return `${noun} will be redacted.`;
     case "review-each": return `${noun} were reviewed individually and resolved.`;
@@ -328,7 +334,7 @@ function recapForm(
   input: {
     captureId: string; harnessSessionId: string; title: string; summary: string;
     audiencePolicy: AudiencePolicy; expiresAt?: string | null; ownerRedactions: readonly OwnerRedaction[];
-    secretDecision: SecretDecision | undefined; textFindingCount: number; requiresWarning: boolean; truncated?: boolean;
+    secretDecision: SecretDecision | undefined; textFindingCount: number; uniqueFindingCount: number; requiresWarning: boolean; truncated?: boolean;
   },
 ): ElicitRequestFormParams {
   const access = input.audiencePolicy.accessMode === "anonymous"
@@ -337,7 +343,7 @@ function recapForm(
     mode: "form",
     message: [
       `Final recap for session ${input.harnessSessionId} (capture ${input.captureId}). Nothing below is editable here.`,
-      `Secrets: ${secretDecisionSummary(input.secretDecision, input.textFindingCount)}`,
+      `Secrets: ${secretDecisionSummary(input.secretDecision, input.textFindingCount, input.uniqueFindingCount)}`,
       `Title: ${input.title}`,
       `Summary: ${input.summary}`,
       `Access: ${access}`,
@@ -595,7 +601,8 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
       if (interactive) {
         const recapRequest = recapForm({
           captureId, harnessSessionId: archive.harnessSessionId, ...candidate, audiencePolicy, expiresAt, ownerRedactions,
-          secretDecision, textFindingCount: textFindings.length, requiresWarning, truncated: metadataTruncated,
+          secretDecision, textFindingCount: textFindings.length, uniqueFindingCount: groupFindingsByValue(textFindings).length,
+          requiresWarning, truncated: metadataTruncated,
         });
         const recapAnswer = await deps.confirm(recapRequest);
         if (recapAnswer === undefined) {

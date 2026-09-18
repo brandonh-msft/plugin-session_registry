@@ -56,15 +56,31 @@ interface SourceIdentity {
 /** Capped so a session with many bad references still renders a short, actionable list. */
 const DEPENDENCY_PATH_LIST_LIMIT = 20;
 
+/** One unauthorized/missing native output reference, in both forms a retry might need. */
+interface DependencyReferenceIssue {
+  /** The exact raw text recorded in the native journal. Verbatim, this is the required `dependencyMappings[].sourcePath` key if the file has moved. */
+  readonly reference: string;
+  /** Where that reference resolves to on this filesystem. Verbatim, this is the required `dependencyPaths[]` entry if the file has NOT moved. */
+  readonly resolved: string;
+}
+
 /**
- * Renders exact absolute paths for an UNSUPPORTED_DEPENDENCY/MISSING_DEPENDENCY
- * error so a caller can copy them verbatim into dependencyPaths on retry,
- * instead of guessing by searching the filesystem.
+ * Renders an UNSUPPORTED_DEPENDENCY/MISSING_DEPENDENCY retry list that
+ * always states both forms explicitly, so a caller never has to guess (or
+ * search the filesystem) which value belongs in which retry field: the raw
+ * `reference` is the only valid `dependencyMappings[].sourcePath` key, and
+ * is NOT the same value as the resolved path unless the reference already
+ * happened to be an absolute path identical to its resolution; the
+ * `resolved` path is the only valid `dependencyPaths[]` entry.
  */
-function formatDependencyPathList(paths: readonly string[]): string {
-  const shown = paths.slice(0, DEPENDENCY_PATH_LIST_LIMIT);
-  const remainder = paths.length - shown.length;
-  return shown.join(", ") + (remainder > 0 ? `, and ${remainder} more` : "");
+function formatDependencyIssueList(issues: readonly DependencyReferenceIssue[]): string {
+  const shown = issues.slice(0, DEPENDENCY_PATH_LIST_LIMIT);
+  const remainder = issues.length - shown.length;
+  const rendered = shown.map(({ reference, resolved }) =>
+    reference === resolved
+      ? resolved
+      : `${resolved} (recorded reference: ${JSON.stringify(reference)} — use this exact quoted text, never the resolved path before it, as the dependencyMappings sourcePath if relocating)`);
+  return rendered.join("; ") + (remainder > 0 ? `; and ${remainder} more` : "");
 }
 
 async function directoryEntries(path: string): Promise<readonly string[]> {
@@ -419,8 +435,8 @@ export async function captureNativeSession(
   // one retry can authorize every needed path at once via dependencyPaths -
   // an agent otherwise has no signal beyond "some file, somewhere" and tends
   // to guess by scanning the filesystem across several wasted attempts.
-  const unauthorizedReferences: string[] = [];
-  const missingReferences: string[] = [];
+  const unauthorizedReferences: DependencyReferenceIssue[] = [];
+  const missingReferences: DependencyReferenceIssue[] = [];
   for (const reference of pendingReferences) {
     let absolute: string | undefined;
     try {
@@ -448,23 +464,23 @@ export async function captureNativeSession(
           path: `dependencies/${createHash("sha256").update(reference).digest("hex")}/${basename(resolvedAbsolute)}`,
         }, false, reference);
       } else if (!selected.allowedDependencies.some((directory) => isWithin(directory, resolvedAbsolute))) {
-        unauthorizedReferences.push(resolvedAbsolute);
+        unauthorizedReferences.push({ reference, resolved: resolvedAbsolute });
       } else {
         await captureFile(resolvedAbsolute);
       }
     } catch (error) {
       if (!isMissingFile(error)) throw error;
-      missingReferences.push(absolute ?? reference);
+      missingReferences.push({ reference, resolved: absolute ?? reference });
     }
   }
   if (unauthorizedReferences.length > 0) {
     throw new NativeCaptureError("UNSUPPORTED_DEPENDENCY",
       `${unauthorizedReferences.length} native output reference(s) are outside the selected session; no external file was read. ` +
-      `Authorize these exact files in dependencyPaths (or map a relocated reference with dependencyMappings), then retry with the same captureId: ${formatDependencyPathList(unauthorizedReferences)}`);
+      `Authorize the exact resolved path(s) in dependencyPaths, or if the file has been relocated, add a dependencyMappings entry keyed by the exact quoted raw reference (never the resolved path) pointing to its new absolute location, then retry with the same captureId: ${formatDependencyIssueList(unauthorizedReferences)}`);
   }
   if (missingReferences.length > 0) {
     throw new NativeCaptureError("MISSING_DEPENDENCY",
-      `${missingReferences.length} referenced native output or attachment file(s) are missing; no partial archive was prepared: ${formatDependencyPathList(missingReferences)}`);
+      `${missingReferences.length} referenced native output or attachment file(s) are missing; no partial archive was prepared. If relocated, add a dependencyMappings entry keyed by the exact quoted raw reference (never the resolved path) pointing to its new absolute location, then retry with the same captureId: ${formatDependencyIssueList(missingReferences)}`);
   }
   await reader.assertUnchanged();
   for (const external of externalReaders) await external.assertUnchanged();

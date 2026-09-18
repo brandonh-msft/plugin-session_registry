@@ -200,6 +200,33 @@ describe("Copilot and Claude lifecycle source profiles", () => {
     expect(archive.files[0]?.content).toContain(JSON.stringify(recorded));
   });
 
+  it("states both the resolved path and the distinct raw reference when they differ, so a retry never has to guess", async () => {
+    const fixture = await nativeFixture("github-copilot-cli");
+    directories.push(fixture.root);
+    // A relative reference resolves to something different from its raw
+    // text, and (being outside the session root) is unauthorized regardless
+    // of whether a file exists there.
+    const reference = "../outside-session/tool-output.txt";
+    await writeRecords(fixture.primary, [...fixture.records, {
+      type: "tool.execution_complete", data: { result: { contents: [{ type: "shell_exit", outputFilePath: reference }] } },
+    }]);
+    const service = createNativeCaptureService(fixture.options);
+    let error: unknown;
+    try {
+      await service.prepare({ harness: "github-copilot-cli", harnessSessionId: SESSION_ID });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(NativeCaptureError);
+    const message = (error as NativeCaptureError).message;
+    expect(message).toContain("UNSUPPORTED_DEPENDENCY");
+    // The raw recorded reference must appear quoted, verbatim, distinct from
+    // the resolved absolute path - this is the exact dependencyMappings
+    // sourcePath key, never the resolved path shown alongside it.
+    expect(message).toContain(JSON.stringify(reference));
+    expect(message).toContain("dependencyMappings sourcePath");
+  });
+
   it("retains every relocation binding when references share an already inventoried file", async () => {
     const fixture = await nativeFixture("github-copilot-cli");
     directories.push(fixture.root);

@@ -116,12 +116,16 @@ const sourceSelectionShape = {
     "VS Code Agent Host only: exact host session identifier when it differs from the backing SDK session ID. Not a path or URL.",
   ),
   dependencyPaths: z.array(z.string().min(1).max(32_768)).max(1_000).optional().describe(
-    "Exact external historical files authorized by the owner; only references present in the selected native source are read.",
+    "Exact external historical files authorized by the owner. Use the resolved absolute path(s) listed in an UNSUPPORTED_DEPENDENCY/MISSING_DEPENDENCY error, not the raw recorded reference text also shown in that error. Only references present in the selected native source are read.",
   ),
   dependencyMappings: z.array(z.object({
-    sourcePath: z.string().min(1).max(32_768),
-    localPath: z.string().min(1).max(32_768),
-  }).strict()).max(1_000).optional().describe("Explicit mappings from recorded external references to owner-authorized historical copies."),
+    sourcePath: z.string().min(1).max(32_768).describe(
+      "The raw recorded reference exactly as quoted in an UNSUPPORTED_DEPENDENCY/MISSING_DEPENDENCY error, never the resolved absolute path shown alongside it. Use this only when the file has moved from where it was originally recorded.",
+    ),
+    localPath: z.string().min(1).max(32_768).describe("Absolute path to the owner-authorized file that now holds that reference's content."),
+  }).strict()).max(1_000).optional().describe(
+    "Explicit mappings from a raw recorded reference (sourcePath, verbatim from the error, not resolved) to an owner-authorized historical copy at its new location (localPath, absolute).",
+  ),
 };
 
 const resolutionsSchema = z.array(z.object({
