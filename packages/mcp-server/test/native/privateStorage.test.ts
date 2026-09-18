@@ -32,7 +32,10 @@ describe("private capture storage", () => {
 
   it("writes captures whose absolute paths exceed the legacy Windows limit", async () => {
     const root = await fixture();
-    const directory = join(root, "nested-directory-name".repeat(6), "captures");
+    // Enough nesting that the absolute path clears the 260-character legacy
+    // limit from any temporary directory, including short POSIX ones, while
+    // each component stays inside the 255-byte filesystem limit.
+    const directory = join(root, "nested-directory-name".repeat(6), "nested-directory-name".repeat(6), "captures");
     await ensurePrivateCaptureDirectory(directory);
     const path = join(directory, `${"c".repeat(64)}.json`);
     expect(path.length).toBeGreaterThan(260);
