@@ -6,4 +6,6 @@ export * from "./scanning/resolution.js";
 export * from "./summary/generate.js";
 export * from "./archive/nativeSessionArchive.js";
 export * from "./archive/nativeSessionBundle.js";
+export * from "./archive/importErrors.js";
+export * from "./archive/importContracts.js";
 export * from "./contracts/fullFidelityPublicationContract.js";
