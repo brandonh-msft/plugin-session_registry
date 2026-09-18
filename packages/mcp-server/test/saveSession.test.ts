@@ -124,8 +124,11 @@ describe("save-session MCP workflow", () => {
       expect(Object.keys(form.requestedSchema.properties)).toEqual([
         "title", "summary", "audience", "expiration", "additionalRedactions",
       ]);
+      // additionalRedactions is intentionally optional: the owner must be
+      // able to submit blank text to mean "nothing else to redact" without
+      // the host blocking submission.
       expect(form.requestedSchema.required).toEqual([
-        "title", "summary", "audience", "expiration", "additionalRedactions",
+        "title", "summary", "audience", "expiration",
       ]);
       const recap = ElicitRequestFormParamsSchema.parse(run.confirmations[1]!.params);
       expect(Object.keys(recap.requestedSchema.properties)).toEqual(["confirmPublish"]);
@@ -420,6 +423,97 @@ describe("save-session MCP workflow", () => {
       expect(decisionForm.message).toContain("10. [");
       expect(decisionForm.message).not.toContain("11. [");
       expect(decisionForm.message).toContain("...and 2 more.");
+    } finally { await run.close(); }
+  });
+
+  it("reports a repeated secret value once in the bulk decision form, noting how many places it appears", async () => {
+    const token = `ghp_${"x".repeat(36)}`;
+    const run = await setup("github-copilot-cli", accepted);
+    await appendFile(run.fixture.primary, JSON.stringify({
+      type: "assistant.message", data: { content: `First: ${token}. Second: ${token}. Third: ${token}.` },
+    }) + "\n");
+    try {
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      expect(result.isError).not.toBe(true);
+      const decisionForm = ElicitRequestFormParamsSchema.parse(run.confirmations[0]!.params);
+      expect(decisionForm.message).toContain("3 likely secrets (1 unique value)");
+      expect(decisionForm.message).toContain("(appears in 3 places)");
+      // Only one itemized line, not three.
+      expect(decisionForm.message).not.toContain("2. [");
+    } finally { await run.close(); }
+  });
+
+  it("asks once per unique value via review-each and applies the same decision to every occurrence", async () => {
+    let calls = 0;
+    const run = await setup("github-copilot-cli", (request) => {
+      calls++;
+      if (calls === 1) return { action: "accept", content: { decision: "review-each" } };
+      if (calls === 2) return { action: "accept", content: { decision: "redact-default" } };
+      return accepted(request);
+    });
+    const token = `ghp_${"x".repeat(36)}`;
+    await appendFile(run.fixture.primary, JSON.stringify({
+      type: "assistant.message", data: { content: `First: ${token}. Second: ${token}.` },
+    }) + "\n");
+    try {
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      expect(result.isError).not.toBe(true);
+      // Secret-decision gate (review-each), exactly one per-finding form
+      // (not two), the metadata form, and the recap-confirm.
+      expect(run.confirmations).toHaveLength(4);
+      const perFinding = ElicitRequestFormParamsSchema.parse(run.confirmations[1]!.params);
+      expect(perFinding.message).toContain("Finding 1 of 1 unique value");
+      expect(perFinding.message).toContain("This exact value appears in 2 places; your decision applies to all of them.");
+      const content = parseNativeSessionArchive(run.submissions[0]!.transcript)?.files[0]?.content;
+      expect(content).not.toContain(token);
+      expect(content?.match(/\[REDACTED\]/g)).toHaveLength(2);
+    } finally { await run.close(); }
+  });
+
+  it("treats case-different values as distinct secrets to review separately", async () => {
+    let calls = 0;
+    const run = await setup("github-copilot-cli", (request) => {
+      calls++;
+      if (calls === 1) return { action: "accept", content: { decision: "review-each" } };
+      if (calls === 2 || calls === 3) return { action: "accept", content: { decision: "redact-default" } };
+      return accepted(request);
+    });
+    const lower = `ghp_${"x".repeat(36)}`;
+    const upper = `ghp_${"X".repeat(36)}`;
+    await appendFile(run.fixture.primary, JSON.stringify({
+      type: "assistant.message", data: { content: `First: ${lower}. Second: ${upper}.` },
+    }) + "\n");
+    try {
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      expect(result.isError).not.toBe(true);
+      // Two distinct per-finding forms (case-sensitive), plus the gate,
+      // metadata, and recap forms.
+      expect(run.confirmations).toHaveLength(5);
+    } finally { await run.close(); }
+  });
+
+  it("submits successfully with a blank additional-redactions answer, applying zero owner redactions", async () => {
+    const run = await setup("github-copilot-cli", (request) => {
+      const params = ElicitRequestFormParamsSchema.parse(request.params);
+      const properties = params.requestedSchema.properties;
+      if ("title" in properties) {
+        return { action: "accept", content: {
+          title: "default" in properties.title! ? properties.title.default : "",
+          summary: "default" in properties.summary! ? properties.summary.default : "",
+          audience: "default" in properties.audience! ? properties.audience.default : "",
+          expiration: "default" in properties.expiration! ? properties.expiration.default : "",
+          additionalRedactions: "",
+        } };
+      }
+      return accepted(request);
+    });
+    try {
+      const result = await run.client.callTool({ name: "save_session", arguments: run.draft });
+      expect(result.isError).not.toBe(true);
+      expect(run.confirmations[0]!.params.requestedSchema.required).not.toContain("additionalRedactions");
+      const receipt = result.content[1];
+      if (receipt?.type !== "text") throw new Error("Expected publication receipt");
+      expect(JSON.parse(receipt.text)).toMatchObject({ publicationSettings: { ownerRequestedRedactionCount: 0 } });
     } finally { await run.close(); }
   });
 

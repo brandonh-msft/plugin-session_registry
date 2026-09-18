@@ -105,24 +105,24 @@ The MCP server must:
 
 Once artifacts are gathered and scanned, the server drives a fixed, non-negotiable sequence in interactive mode. None of these steps can be skipped, merged, reordered, auto-approved, or inferred from the original publish request, regardless of how the agent or user phrases it:
 
-1. **Secret decision gate.** If any scanner findings are unresolved, the owner must make one explicit choice before anything else happens. The bulk-decision form itself always lists a capped preview of the detected findings (category, location, and a masked partial preview of each value) so this choice is never made blind, even for large finding sets:
+1. **Secret decision gate.** If any scanner findings are unresolved, the owner must make one explicit choice before anything else happens. The bulk-decision form itself always lists a capped preview of the detected findings, deduped to one entry per unique (case-sensitive) value with an "(appears in N places)" note when a value repeats, so this choice is never made blind, even for large finding sets:
    - Redact all detected secrets.
-   - Review and approve each finding individually (a per-finding loop, one decision per finding).
+   - Review and approve each finding individually (a per-finding loop, one decision per **unique detected value**, never repeated per occurrence).
    - Publish unredacted as an explicit override (never assumed, never defaulted).
 
    Never silently redact, ignore, or declare false positives on the owner's behalf. This decision is separate from, and always precedes, the metadata form below.
 
-   **Per-finding review detail.** Each step of the "review and approve individually" loop shows the finding's category, severity, location, and a masked partial preview of the detected value (e.g. `ghp_****************************abcd` plus its character count) — enough to recognize the finding, never enough to reconstruct it. The owner then chooses exactly one of three options:
+   **Per-finding review detail.** Each step of the "review and approve individually" loop shows one unique detected value's category, severity, location, and a masked partial preview (e.g. `ghp_****************************abcd` plus its character count) — enough to recognize the finding, never enough to reconstruct it. If that exact value appears more than once, the step says so and the owner's single decision is applied to every occurrence automatically — the owner is never asked to repeat the same decision for the same value. The owner then chooses exactly one of three options:
    - Redact with the standard `[REDACTED]` placeholder.
-   - Keep the finding unredacted (an explicit owner override for that one finding).
-   - Redact with owner-supplied custom replacement text — choosing this immediately opens one follow-up form asking for that exact replacement text, then continues to the next finding. Blank replacement text is rejected and re-asked rather than silently falling back to `[REDACTED]`.
+   - Keep the finding unredacted (an explicit owner override for that value, applied everywhere it occurs).
+   - Redact with owner-supplied custom replacement text — choosing this immediately opens one follow-up form asking for that exact replacement text, then continues to the next unique value. Blank replacement text is rejected and re-asked rather than silently falling back to `[REDACTED]`.
 
-1. **One-shot metadata form.** Present exactly one confirmation form containing all five fields together, filled in exactly once with no re-presentation on edits:
+1. **One-shot metadata form.** Present exactly one confirmation form containing all five fields together, filled in exactly once with no re-presentation on edits. `additionalRedactions` is the only optional field — the owner may leave it blank to mean "nothing else to redact":
    - `title` — YOU auto-generate a specific 1-120 character task title from approved conversation content; the form prefills it for owner confirmation/edits. Avoid generic placeholders such as "Saved session" or "Session export".
    - `summary` — YOU auto-generate a 1-500 character summary of objective, outcome, decisions, and verification status; the form prefills it for owner confirmation/edits.
    - `audience` — defaults to "Anyone with the link can view" unless the user specified otherwise. Preserve explicit user choices: `anyone`, `org:<github-org>`, `team:<org>/<team>`, `users:<user1>,<user2>`.
    - `expiration` — defaults to the registry's 14-day default (omit to use it). Preserve explicit user choices: `never` / `null` for no expiration, or an ISO-8601 timestamp for a custom expiration.
-   - `additionalRedactions` — the owner's free-text answer to "anything else you'd like redacted that the scanner didn't flag?" (internal project names, personal names, hostnames, URLs, or other sensitive content not caught by the scanner), or an explicit statement that there is nothing more to redact. Each supplied target becomes an exact-text owner redaction applied to every scannable native source occurrence and every publication metadata occurrence.
+   - `additionalRedactions` — the owner's free-text answer to "anything else you'd like redacted that the scanner didn't flag?" (internal project names, personal names, hostnames, URLs, or other sensitive content not caught by the scanner). This field is optional: leaving it blank means "nothing else to redact" and is accepted without further confirmation. Each supplied target becomes an exact-text owner redaction applied to every scannable native source occurrence and every publication metadata occurrence.
 
    If the host has no elicitation form, show the returned proposal as plain chat text containing all five fields and collect the owner's answers before calling `save_session` again with the same `captureId`.
 

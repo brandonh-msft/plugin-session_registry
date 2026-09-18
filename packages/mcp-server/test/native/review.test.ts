@@ -118,11 +118,35 @@ describe("owner-controlled native security review", () => {
     expect(() => resolveNativeCapture(original, seed, [], metadata)).toThrow(CaptureReviewRequiredError);
   });
 
+  it("assigns the same opaque valueKey to occurrences of the exact same secret value", () => {
+    const token = "ghp_" + "x".repeat(36);
+    const original = archive(JSON.stringify({ type: "tool.result", output: `${token} again: ${token}` }) + "\n");
+    const findings = scanNativeCapture(original, seed);
+    expect(findings.length).toBeGreaterThanOrEqual(2);
+    const keys = new Set(findings.map((finding) => finding.valueKey));
+    expect(keys.size).toBe(1);
+    expect(JSON.stringify(findings)).not.toContain(token);
+  });
+
+  it("assigns different valueKeys to case-different values and never reverse-derives the raw text", () => {
+    const lower = "ghp_" + "x".repeat(36);
+    const upper = "ghp_" + "X".repeat(36);
+    const original = archive(JSON.stringify({ type: "tool.result", output: `${lower} ${upper}` }) + "\n");
+    const findings = scanNativeCapture(original, seed);
+    expect(findings).toHaveLength(2);
+    expect(findings[0]?.valueKey).toBeDefined();
+    expect(findings[1]?.valueKey).toBeDefined();
+    expect(findings[0]?.valueKey).not.toBe(findings[1]?.valueKey);
+  });
+
   it("masks manualReview findings out of the public shape entirely", () => {
     const original = archive('{"type":"event","content":"inspectable fixture"}\n');
     const unscannable = scanCapture(original, seed).filter(({ category }) => category === "unscannable-native-bundle");
     expect(unscannable.length).toBeGreaterThan(0);
-    for (const finding of unscannable) expect(finding.maskedPreview).toBeUndefined();
+    for (const finding of unscannable) {
+      expect(finding.maskedPreview).toBeUndefined();
+      expect(finding.valueKey).toBeUndefined();
+    }
   });
 
   it("applies only the accepted security span and keeps the owner-only original intact", () => {

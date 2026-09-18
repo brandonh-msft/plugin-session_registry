@@ -49,6 +49,16 @@ export interface CaptureFinding {
    * an entire binary blob or unparsed segment, not a bounded secret).
    */
   readonly maskedPreview?: string;
+  /**
+   * An opaque, one-way hash of the finding's exact detected value (verbatim,
+   * case-sensitive, no whitespace collapsing). Findings that share a
+   * `valueKey` are byte-identical occurrences of the same value and should
+   * be reviewed/resolved together rather than repeating the same decision
+   * once per occurrence. Never reverse-derivable to the original text, and
+   * never present for `manualReview` findings (same guard as
+   * `maskedPreview`).
+   */
+  readonly valueKey?: string;
 }
 
 interface ReviewTarget {
@@ -117,7 +127,7 @@ function publicFinding(finding: LocatedFinding): CaptureFinding {
   return {
     id, category, severity, source: safeReviewText(source), offset, length, proposedReplacement,
     ...(manualReview ? { manualReview } : {}),
-    ...(manualReview ? {} : { maskedPreview: maskFindingPreview(decodedText) }),
+    ...(manualReview ? {} : { maskedPreview: maskFindingPreview(decodedText), valueKey: hash(decodedText) }),
   };
 }
 

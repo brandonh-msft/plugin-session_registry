@@ -132,28 +132,60 @@ function findingPreviewLine(finding: CaptureFinding): string {
     : ` Detected value preview: ${finding.maskedPreview} (${finding.length} character${finding.length === 1 ? "" : "s"}).`;
 }
 
-/** Capped so a huge finding set (e.g. dozens of secrets) still renders a short, readable list. */
+/**
+ * Groups findings that share the exact same detected value (case-sensitive,
+ * via the opaque `valueKey` hash) so the owner is asked once per unique
+ * value rather than once per occurrence. Preserves first-seen order both
+ * within a group and across groups. Findings without a `valueKey` (should
+ * not happen for non-manualReview findings, but guarded defensively) are
+ * each their own singleton group keyed by finding id, so nothing silently
+ * disappears from review.
+ */
+function groupFindingsByValue(pending: readonly CaptureFinding[]): readonly (readonly CaptureFinding[])[] {
+  const order: string[] = [];
+  const groups = new Map<string, CaptureFinding[]>();
+  for (const finding of pending) {
+    const key = finding.valueKey ?? finding.id;
+    const group = groups.get(key);
+    if (group === undefined) {
+      order.push(key);
+      groups.set(key, [finding]);
+    } else {
+      group.push(finding);
+    }
+  }
+  return order.map((key) => groups.get(key)!);
+}
+
+/** Capped so a huge finding set (e.g. dozens of unique secret values) still renders a short, readable list. */
 const SECRET_LIST_PREVIEW_LIMIT = 10;
 
 /**
  * Step 2 of the deterministic publish flow: a single-field choice, never a
  * multi-field settings form. It always literally reports how many likely
- * secrets the scanner found, with a capped preview list, before asking how
- * to handle them.
+ * secrets the scanner found, with a capped preview list deduped to one
+ * entry per unique value, before asking how to handle them.
  */
 function secretDecisionForm(
   input: { readonly captureId: string; readonly harnessSessionId: string; readonly pending: readonly CaptureFinding[] },
 ): ElicitRequestFormParams {
   const { pending } = input;
-  const shown = pending.slice(0, SECRET_LIST_PREVIEW_LIMIT);
-  const remaining = pending.length - shown.length;
-  const list = shown.map((finding, index) =>
-    `  ${index + 1}. [${finding.category}/${finding.severity}] ${finding.source}${findingPreviewLine(finding)}`);
+  const groups = groupFindingsByValue(pending);
+  const shown = groups.slice(0, SECRET_LIST_PREVIEW_LIMIT);
+  const remaining = groups.length - shown.length;
+  const list = shown.map((group, index) => {
+    const finding = group[0]!;
+    const occurrences = group.length > 1 ? ` (appears in ${group.length} places)` : "";
+    return `  ${index + 1}. [${finding.category}/${finding.severity}] ${finding.source}${findingPreviewLine(finding)}${occurrences}`;
+  });
   if (remaining > 0) list.push(`  ...and ${remaining} more.`);
+  const countText = groups.length === pending.length
+    ? `${pending.length} likely secret${pending.length === 1 ? "" : "s"}`
+    : `${pending.length} likely secret${pending.length === 1 ? "" : "s"} (${groups.length} unique value${groups.length === 1 ? "" : "s"})`;
   return {
     mode: "form",
     message: [
-      `The scanner found ${pending.length} likely secret${pending.length === 1 ? "" : "s"} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
+      `The scanner found ${countText} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
       `Detected secrets:\n${list.join("\n")}`,
       "Choose how to handle every detected secret before continuing.",
     ].join("\n\n"),
@@ -175,16 +207,22 @@ function secretDecisionForm(
   };
 }
 
-/** One step of the "review-each" per-finding loop, never the secret text itself. */
+/**
+ * One step of the "review-each" loop: one form per unique detected value
+ * (never per raw occurrence), never the secret text itself.
+ */
 function perFindingForm(
-  input: { readonly captureId: string; readonly harnessSessionId: string; readonly finding: CaptureFinding; readonly position: number; readonly total: number },
+  input: { readonly captureId: string; readonly harnessSessionId: string; readonly group: readonly CaptureFinding[]; readonly position: number; readonly total: number },
 ): ElicitRequestFormParams {
-  const { finding } = input;
+  const finding = input.group[0]!;
+  const occurrenceLine = input.group.length > 1
+    ? ` This exact value appears in ${input.group.length} places; your decision applies to all of them.`
+    : "";
   return {
     mode: "form",
     message: [
-      `Finding ${input.position} of ${input.total} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
-      `Category: ${finding.category}. Severity: ${finding.severity}. Location: ${finding.source}.${findingPreviewLine(finding)}`,
+      `Finding ${input.position} of ${input.total} unique value${input.total === 1 ? "" : "s"} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
+      `Category: ${finding.category}. Severity: ${finding.severity}. Location: ${finding.source}.${findingPreviewLine(finding)}${occurrenceLine}`,
     ].join("\n\n"),
     requestedSchema: {
       type: "object",
@@ -204,15 +242,18 @@ function perFindingForm(
   };
 }
 
-/** Follow-up step shown only when a finding's decision is "redact-custom". */
+/** Follow-up step shown only when a unique value's decision is "redact-custom". */
 function customReplacementForm(
-  input: { readonly captureId: string; readonly harnessSessionId: string; readonly finding: CaptureFinding; readonly position: number; readonly total: number },
+  input: { readonly captureId: string; readonly harnessSessionId: string; readonly group: readonly CaptureFinding[]; readonly position: number; readonly total: number },
 ): ElicitRequestFormParams {
+  const occurrenceLine = input.group.length > 1
+    ? ` This replacement is applied everywhere this exact value appears (${input.group.length} places).`
+    : "";
   return {
     mode: "form",
     message: [
-      `Custom replacement for finding ${input.position} of ${input.total} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
-      "Enter the exact text to use instead of this finding's value.",
+      `Custom replacement for finding ${input.position} of ${input.total} unique value${input.total === 1 ? "" : "s"} in session ${input.harnessSessionId} (capture ${input.captureId}).`,
+      `Enter the exact text to use instead of this value.${occurrenceLine}`,
     ].join("\n\n"),
     requestedSchema: {
       type: "object",
@@ -261,7 +302,7 @@ function metadataForm(
           default: ownerRedactionsText(input.ownerRedactions),
         },
       },
-      required: ["title", "summary", "audience", "expiration", "additionalRedactions"],
+      required: ["title", "summary", "audience", "expiration"],
     },
   };
 }
@@ -347,18 +388,19 @@ async function runSecretDecisionGate(
     return { kind: "resolved", decision, resolutions: pending.map((finding) => ({ findingId: finding.id, action: { kind: "owner-override-unredacted" } })) };
   }
   const resolutions: CaptureResolution[] = [];
-  for (const finding of pending) {
-    const position = resolutions.length + 1;
-    const answer = await deps.confirm(perFindingForm({ ...ctx, finding, position, total: pending.length }));
+  const groups = groupFindingsByValue(pending);
+  for (const [index, group] of groups.entries()) {
+    const position = index + 1;
+    const answer = await deps.confirm(perFindingForm({ ...ctx, group, position, total: groups.length }));
     if (answer === undefined) return { kind: "unavailable" };
     if (answer.action !== "accept") return { kind: "cancelled" };
     const findingDecision = answer.content?.decision;
     if (findingDecision === "redact-default") {
-      resolutions.push({ findingId: finding.id, action: { kind: "accept-redaction" } });
+      resolutions.push(...group.map((finding) => ({ findingId: finding.id, action: { kind: "accept-redaction" as const } })));
     } else if (findingDecision === "keep") {
-      resolutions.push({ findingId: finding.id, action: { kind: "owner-override-unredacted" } });
+      resolutions.push(...group.map((finding) => ({ findingId: finding.id, action: { kind: "owner-override-unredacted" as const } })));
     } else if (findingDecision === "redact-custom") {
-      const customAnswer = await deps.confirm(customReplacementForm({ ...ctx, finding, position, total: pending.length }));
+      const customAnswer = await deps.confirm(customReplacementForm({ ...ctx, group, position, total: groups.length }));
       if (customAnswer === undefined) return { kind: "unavailable" };
       if (customAnswer.action !== "accept") return { kind: "cancelled" };
       const replacementText = typeof customAnswer.content?.replacementText === "string"
@@ -369,7 +411,7 @@ async function runSecretDecisionGate(
           'Enter replacement text for this finding, or go back and choose "Yes, as [REDACTED]" or "No" instead.',
         );
       }
-      resolutions.push({ findingId: finding.id, action: { kind: "custom-replacement", replacementText } });
+      resolutions.push(...group.map((finding) => ({ findingId: finding.id, action: { kind: "custom-replacement" as const, replacementText } })));
     } else {
       throw new NativeCaptureError("INVALID_CONFIRMATION", "Choose one of the three options for this finding.");
     }
@@ -470,14 +512,15 @@ export function createSaveHandler(deps: SaveSessionDependencies) {
         const content = answer.content;
         if (typeof content?.title !== "string" || typeof content.summary !== "string" ||
             typeof content.audience !== "string" || typeof content.expiration !== "string" ||
-            typeof content.additionalRedactions !== "string") {
-          throw new NativeCaptureError("INVALID_CONFIRMATION", "Confirmation must contain title, summary, audience, expiration, and additional redactions.");
+            (content.additionalRedactions !== undefined && typeof content.additionalRedactions !== "string")) {
+          throw new NativeCaptureError("INVALID_CONFIRMATION", "Confirmation must contain title, summary, audience, and expiration; additional redactions is optional but must be text if provided.");
         }
         const edited = { title: content.title, summary: content.summary };
         const editedAudience = content.audience === audienceText(audiencePolicy) ? audiencePolicy : parseAudienceText(content.audience);
         const editedExpiration = content.expiration === expirationText(expiresAt) ? expiresAt : parseExpiration(content.expiration);
-        const editedOwnerRedactions = content.additionalRedactions === ownerRedactionsText(ownerRedactions)
-          ? ownerRedactions : parseOwnerRedactions(content.additionalRedactions);
+        const additionalRedactionsAnswer = content.additionalRedactions ?? "";
+        const editedOwnerRedactions = additionalRedactionsAnswer === ownerRedactionsText(ownerRedactions)
+          ? ownerRedactions : parseOwnerRedactions(additionalRedactionsAnswer);
         const normalizedEdited = normalizeMetadata(edited);
         candidate = { title: normalizedEdited.title, summary: normalizedEdited.summary };
         metadataTruncated = metadataTruncated || normalizedEdited.truncated;
