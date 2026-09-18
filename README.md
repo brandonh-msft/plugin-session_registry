@@ -49,17 +49,6 @@ VS Code and the Copilot app are treated as projection targets, not the primary n
 5. Review the auto-generated metadata and audience policy.
 6. Confirm the publish action and copy the returned share URL.
 
-## Configuration
-
-The MCP server expects these environment values at runtime:
-
-```bash
-SESSION_REGISTRY_API_URL=https://sessionregistry.io
-SESSION_REGISTRY_TOKEN=your-token
-```
-
-For local work, use the same pattern with a local API URL and a host-managed secret source. Avoid hardcoding credentials in portable config files.
-
 ## Security model
 
 This plugin is built to be explicit about trust boundaries:
