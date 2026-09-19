@@ -1,0 +1,23 @@
+{
+  "name": "@session-registry/core",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Shared session capture, scanning, archive, and publication-contract surface for the plugin and the registry apps",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "yauzl": "^3.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/yauzl": "^3.4.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
+  }
+}
