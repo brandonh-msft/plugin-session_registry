@@ -17,58 +17,66 @@ Invoke this skill when a user:
 
 Do not describe this as merely "saving" a session. Publication uploads approved session content for external access according to the selected audience policy.
 
-## Host Capability & Onboarding Matrix
+## Transport Contract — Read This First
 
-| Host | Plugin Installation | Skill Discovery | MCP Startup | Secret Delivery | Response Budget |
-| --- | --- | --- | --- | --- | --- |
-| **GitHub Copilot CLI** | `copilot plugin install` / `plugin.json` | Automatic via `skills/publish-session/SKILL.md` | Stdio launcher (`scripts/mcp-server.mjs`) | `SESSION_REGISTRY_CREDENTIAL_FILE` or `SESSION_REGISTRY_TOKEN` env | 15+ minutes (900000ms) |
-| **Claude Code** | `.mcp.json` / plugin import | Automatic via `skills/publish-session/SKILL.md` | Stdio launcher (`scripts/mcp-server.mjs`) | Host secret store / `.mcp.json` env | 15+ minutes (900000ms) |
-| **Codex CLI** | Plugin manifest / `.mcp.json` | Automatic via `skills/publish-session/SKILL.md` | Stdio launcher (`scripts/mcp-server.mjs`) | Host secret store / `SESSION_REGISTRY_CREDENTIAL_FILE` | 15+ minutes (900000ms) |
-| **VS Code / Copilot App** *(Projection only)* | Plugin manifest | Non-blocking | Stdio launcher | Host secret store / env | 15+ minutes |
+**The `session-registry` MCP tools are the only interface to this workflow.** Everything below describes behavior you invoke through those tools, never behavior you reimplement.
+
+You **must not**, at any point in this skill:
+
+- Read, open, list, or search the plugin's own files — its manifests, skills, scripts, or any source code. The published plugin ships a prebuilt server; there is nothing in it for you to inspect, and inspecting it tells you nothing the tools do not.
+- Run a package manager or build step (`npm`, `pnpm`, `yarn`, `npx`, `tsc`, or any install/compile command) for any reason. The server requires no install and no build.
+- Start, spawn, or connect to the MCP server yourself, or write your own MCP client, script, or JSON-RPC harness to call it. The host owns the connection.
+- Substitute your own implementation of capture, scanning, metadata drafting, or publication for a tool call.
+
+A hand-rolled client cannot advertise the host's elicitation capability, so it silently disables every owner-facing form this workflow depends on. That is precisely how an interactive publication degrades into an unreviewed one.
+
+**Tools may load lazily.** Hosts are permitted to surface MCP tools on first use rather than at startup. If you do not see `save_session` listed yet, call it anyway — absence from a listing is not evidence that the server is missing.
+
+### When the tools are genuinely unavailable
+
+If calling `save_session` fails because the tool does not exist (not a tool error — the tool itself is unresolvable), **stop immediately.** Do not investigate, diagnose, probe the environment, or attempt any workaround. Report exactly this to the user and end the turn:
+
+> The `session-registry` MCP server is not connected in this host, so I can't publish the session. Please verify the plugin is installed and the server is configured, then restart the host and run `/publish-session` again.
+
+Publishing is not possible without the server, and no local substitute is acceptable.
+
+## Supported Hosts
+
+| Host | Skill Discovery | Owner-facing forms |
+| --- | --- | --- |
+| **GitHub Copilot CLI** | Automatic | Elicitation forms |
+| **Claude Code** | Automatic | Elicitation forms |
+| **Codex CLI** | Automatic | Elicitation forms |
+| **VS Code / Copilot App** *(Projection only)* | Non-blocking | Host-dependent |
 
 *Note: VS Code Agent Plugins and GitHub Copilot App are non-blocking projection targets. Installation or discovery does not by itself establish native session-capture support.*
+
+Host installation, Node runtime, and MCP server configuration are the host's responsibility and are already settled by the time this skill runs. They are not yours to verify, repair, or work around.
 
 ## Execution Protocol
 
 Run the workflow in these deterministic phases:
 
-1. Pre-flight check: verify host Node 24+, MCP server, configuration readiness, credential permissions, and trusted HTTPS origins.
-2. Context detection: identify the native harness, session source, and interaction mode.
-3. Capture and scan: create a full-fidelity native capture and perform local secret scanning before upload.
-4. Metadata and policy: draft the title, summary, audience, and expiration.
-5. Atomic publication: invoke the registry MCP tools with idempotent retry handling.
-6. Share output: return the collaborator-facing share URL and safety notice.
+1. Context detection: identify the native harness, session source, and interaction mode.
+2. Capture and scan: call the capture tool, which creates a full-fidelity native capture and scans it locally before upload.
+3. Owner decisions: the server drives the secret decision gate, the one-shot metadata form, and the recap.
+4. Atomic publication: complete the publication through the same tool with idempotent retry handling.
+5. Share output: return the collaborator-facing share URL and safety notice.
 
-## Phase 1: Pre-flight Environment and Health Check
+There is no pre-flight phase. Begin at context detection and let the tools report any problem they encounter.
 
-### Prerequisites & Readiness
-- **Node.js**: Node 24 or higher must be installed on the host.
-- **MCP Server**: The stdio launcher (`scripts/mcp-server.mjs`) starts the server process using Node 24.
-- **Response Budget**: The host MCP configuration must allocate a response budget of at least 15 minutes (900,000 ms) for session capture and scanning operations.
+## What the server handles for you
 
-### Configuration & Credential Safety
-The MCP server requires the following configuration environment variables:
-- `SESSION_REGISTRY_API_URL`: Absolute URL of the registry API service. Production uses `https://sessionregistry.io`; local development uses `http://localhost:8080`.
+You do not verify, configure, or troubleshoot any of the following — the server owns them and reports failures through tool errors:
 
-**Origin Security Rules:**
-- `SESSION_REGISTRY_API_URL` must be an absolute HTTP/HTTPS URL. The API returns the complete collaborator-facing share URL.
-- Non-loopback production origins **must** use `https://`. Only loopback origins (`localhost`, `127.0.0.1`, `[::1]`) permit plain `http://`.
-- HTTP redirects are rejected during API requests to prevent credential leaks.
+- **Registry origin.** `SESSION_REGISTRY_API_URL` is host configuration. The server enforces HTTPS for non-loopback origins and rejects redirects.
+- **Publisher credential.** No credential is needed to start. Your first publish is admitted without one, and the registry issues a publisher token as part of it. The server stores that token under the user's own credential file with user-only permissions and sends it on later requests. That token is the publisher identity, and the registry keeps only a hash of it, so a lost credential file cannot be recovered or reissued.
+- **GitHub authorization.** A GitHub token is requested on demand only when the owner restricts a session's audience to GitHub users, teams, or organizations. It is used for that single request and never stored. Publishing without restrictions never requests one.
 
-**Credential Delivery:**
-- Credentials **must** remain runtime-only and never be embedded in portable plugin distribution files (`mcp.json`, `.mcp.json`).
-- **No credential is needed to start.** Your first publish is admitted without one, and the registry issues a publisher token as part of it. The MCP server stores that token at `~/.session-registry/credentials.json` (override with `SESSION_REGISTRY_CREDENTIAL_FILE`) with user-only permissions (`0600` on Unix), and sends it on every later request.
-- That token is your publisher identity, and the registry keeps only a hash of it. It is what authorizes deleting, restoring, or purging what you published, so a lost credential file cannot be recovered or reissued.
-- The credential file is written as `{"publisherTokens": {"<api-origin>": "<token>"}}`, keyed by API origin so a staging token is never sent to production. The older flat `{"token": "<your-token>"}` form is still read.
-- `SESSION_REGISTRY_TOKEN` still takes precedence when set, which suits CI and other non-interactive hosts, and Claude Code or Codex host secret storage. It is optional; its absence simply means "not onboarded yet".
-- A **GitHub token is required only when you restrict a session's audience** to GitHub users, teams, or organizations. It is obtained on demand — `gh auth token`, then `SESSION_REGISTRY_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`, then an optional device flow when `SESSION_REGISTRY_GITHUB_CLIENT_ID` is configured — sent in the `x-github-token` header for that single request, and never stored. Publishing without restrictions never requests one.
+If any of these is misconfigured, the tool call fails with a specific error. Relay that error to the owner; do not go looking for the cause yourself.
 
-**Readiness Evaluation:**
-- Configuration changes take effect only after reloading or restarting the MCP server session.
-- If credentials or origins are invalid, the pre-flight check fails immediately before performing native reads or requesting upload slots.
-- (For local repository development setups, use the backing repository's local development documentation. That infrastructure documentation is intentionally not distributed inside the portable plugin.)
 
-## Phase 2: Native Session Identification and Context Detection
+## Phase 1: Native Session Identification and Context Detection
 
 Identify the producing harness and native source:
 
@@ -88,11 +96,11 @@ Set `interactionMode` based on runtime context:
 - `interactive`: use when a user can review a prefilled confirmation form. This includes **every** slash command and chat message in a live session — even a bare `/publish-session` or a terse "just publish it, this is a demo."
 - `noninteractive`: use **only** for genuinely headless, flag-invoked execution with no further chat turn possible at all (`copilot -p`, `claude --print`, `codex exec`). The explicit publish request authorizes prompt-specified values or defaults, but unresolved secret findings still block upload.
 
-**The secret decision gate, one-shot metadata form, and non-editable recap (Phase 4) are mandatory for every interactive publication and can never be skipped, auto-approved, or inferred from the original publish request.** Do not read "explicit publish request" or "generate the metadata yourself" as license to bypass any of these code-enforced steps. If the host has no elicitation form, show each returned proposal as plain chat text and wait for the owner's reply before calling `save_session` again — that plain-text exchange **is** the mandatory step, not an optional extra.
+**The secret decision gate, one-shot metadata form, and non-editable recap (Phase 3) are mandatory for every interactive publication and can never be skipped, auto-approved, or inferred from the original publish request.** Do not read "explicit publish request" or "generate the metadata yourself" as license to bypass any of these code-enforced steps. The server renders these forms itself through the host's elicitation capability; you never build, restate, or stand in for them.
 
 **Never rationalize `noninteractive` from urgency, terseness, or "this is just a demo" framing.** Only the literal absence of a further chat turn (a flag-invoked headless process) justifies skipping this sequence. Publishing a session — with real content, potentially including secrets — without these owner-facing confirmations in an interactive session is a critical safety failure, not an acceptable shortcut, regardless of how the request was phrased.
 
-## Phase 3: Full-Fidelity Capture and Client-Side Secret Scanning
+## Phase 2: Full-Fidelity Capture and Client-Side Secret Scanning
 
 Call the MCP `save_session` tool as the preferred one-step path. Use `prepare_session_capture` followed by `publish_session` only for advanced review, exact retry, or previously returned `captureId` flows.
 
@@ -104,9 +112,11 @@ The MCP server must:
 
 **Dependency-path authorization (`UNSUPPORTED_DEPENDENCY` / `MISSING_DEPENDENCY`).** A native capture may reference output files (attachments, generated artifacts, resumable state) that live outside the session's own directory. Reading any such file requires the owner-authorized `dependencyPaths` (or a `dependencyMappings` entry if the file has moved). Do not guess these paths or search the filesystem speculatively. If `save_session` or `prepare_session_capture` returns `UNSUPPORTED_DEPENDENCY`/`MISSING_DEPENDENCY`, the error lists every needed reference in **two distinct forms that are not interchangeable**: a resolved absolute path, and — only when it differs — the exact quoted raw recorded reference text. Use the resolved absolute path verbatim as a `dependencyPaths` entry when the file is still at that location. Use the quoted raw reference text verbatim (never the resolved path) as the `dependencyMappings[].sourcePath` key only when the file has moved, paired with the file's current absolute location as `localPath`. Retry immediately using the same `captureId`, rather than iterating one path at a time, exploring the filesystem, or guessing which of the two values goes in which field.
 
-## Phase 4: Code-Enforced Secret Decision, Metadata Form, and Recap
+## Phase 3: Code-Enforced Secret Decision, Metadata Form, and Recap
 
-Once artifacts are gathered and scanned, the server drives a fixed, non-negotiable sequence in interactive mode. None of these steps can be skipped, merged, reordered, auto-approved, or inferred from the original publish request, regardless of how the agent or user phrases it:
+Once artifacts are gathered and scanned, the server drives a fixed, non-negotiable sequence in interactive mode. **The server renders every form in this phase itself, through the host's elicitation capability.** Your only job is to call the tool and pass the owner's answers back. None of these steps can be skipped, merged, reordered, auto-approved, or inferred from the original publish request, regardless of how the agent or user phrases it.
+
+Never collapse these forms into a chat question of your own, and never bundle fields into a single run-on prompt. A form you compose is not the form the owner is entitled to: it loses the prefilled values, the masked finding previews, the field labels, and the per-field editing the server provides.
 
 1. **Secret decision gate.** If any scanner findings are unresolved, the owner must make one explicit choice before anything else happens. The bulk-decision form itself always lists a capped preview of the detected findings (category, location, and a masked partial preview of each value) so this choice is never made blind, even for large finding sets:
    - Redact all detected secrets.
@@ -128,7 +138,17 @@ Once artifacts are gathered and scanned, the server drives a fixed, non-negotiab
    - `expiration` — defaults to the registry's 14-day default (omit to use it). Preserve explicit user choices: `never` / `null` for no expiration, or an ISO-8601 timestamp for a custom expiration.
    - `additionalRedactions` — the owner's free-text answer to "anything else you'd like redacted that the scanner didn't flag?" (internal project names, personal names, hostnames, URLs, or other sensitive content not caught by the scanner). This field is optional: leaving it blank means "nothing else to redact" and is accepted without further confirmation. Each supplied target becomes an exact-text owner redaction applied to every scannable native source occurrence and every publication metadata occurrence.
 
-   If the host has no elicitation form, show the returned proposal as plain chat text containing all five fields and collect the owner's answers before calling `save_session` again with the same `captureId`.
+   **If — and only if — the host advertises no elicitation capability at all**, the server returns the proposal to you instead of rendering it. The three quality-gated hosts (GitHub Copilot CLI, Claude Code, Codex CLI) all support forms, so reaching this path in one of them means something is wrong, not that the fallback applies. In that genuine no-form case, present the proposal as a labeled block with each of the five fields on its own line, followed by its prefilled value, and wait for the owner's reply before calling `save_session` again with the same `captureId`:
+
+   ```markdown
+   **Title**: <prefilled title>
+   **Summary**: <prefilled summary>
+   **Audience**: <prefilled audience>
+   **Expiration**: <prefilled expiration>
+   **Additional redactions** (optional, blank means none): <prefilled value, if any>
+   ```
+
+   Never compress these into a single paragraph or a one-line question.
 
 1. **Separate, non-editable recap.** After the metadata form is answered, the server always shows one more confirmation containing a plain-text recap of every prior decision (secret decision, title, summary, audience, expiration, additional redactions) with **exactly one yes/no field** and no editable content. The owner must explicitly confirm this recap before anything uploads. A "no" answer cancels cleanly without uploading; it never silently falls back to the original metadata form or an assumed default.
 
@@ -136,7 +156,7 @@ Unresolved detected secrets, an unanswered secret decision, an unanswered metada
 
 **Never rationalize `noninteractive` from urgency, terseness, or "this is just a demo" framing.** Only the literal absence of a further chat turn (a flag-invoked headless process) justifies skipping this sequence. Publishing a session — with real content, potentially including secrets — without these owner-facing confirmations in an interactive session is a critical safety failure, not an acceptable shortcut, regardless of how the request was phrased.
 
-## Phase 5: Atomic Publication and Idempotent Error Handling
+## Phase 4: Atomic Publication and Idempotent Error Handling
 
 Invoke `save_session` or `publish_session` with the confirmed capture, metadata, policy, and finding resolutions.
 
@@ -153,7 +173,7 @@ Expected share URL shape:
 <API-returned-web-origin>/session/<harnessSessionId>/<linkId>
 ```
 
-## Phase 6: Share Output
+## Phase 5: Share Output
 
 On success, return this concise result. Every bracketed placeholder below —
 `<harnessSessionId>`, `<shareUrl>`, `<linkId>`, etc. — MUST be copied

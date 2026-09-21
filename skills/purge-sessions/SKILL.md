@@ -11,6 +11,10 @@ operation. This is the bulk counterpart to `purge-session`: it never
 accepts an id list, and it always previews the exact set before deleting
 anything.
 
+## Transport Contract
+
+The `session-registry` MCP tools are the only interface to this workflow. Do not read the plugin's own files, run a package manager or build step, start the MCP server yourself, or write your own MCP client. Tools may load lazily, so call the tool even if you do not see it listed yet. If it is genuinely unresolvable, stop immediately and tell the user the `session-registry` MCP server is not connected in this host.
+
 ## When to Use
 
 Invoke this skill when a user:

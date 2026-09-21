@@ -8,6 +8,10 @@ user-invocable: false
 
 Use this skill immediately before issuing any pull/merge-request-creating tool call or shell command, on any git hosting provider. It offers to attach the current session's PR-Ready Share Card to the request being opened, and respects a developer's durable "stop asking" choice. This is the *only* place a PR/MR is ever written to as part of publishing a session, and only ever after a fresh, explicit "Yes" given in the same conversation — it is a narrowly scoped, consent-gated exception to the existing rule that the registry never auto-writes to a PR unattended, not a relaxation of it.
 
+## Transport Contract
+
+The `session-registry` MCP tools are the only interface to this workflow. Do not read the plugin's own files, run a package manager or build step, start the MCP server yourself, or write your own MCP client. Tools may load lazily, so call the tool even if you do not see it listed yet. If it is genuinely unresolvable, stop immediately and tell the user the `session-registry` MCP server is not connected in this host.
+
 ## When to Use
 
 Invoke this skill immediately before, and only before, a call or command that **creates** a pull/merge request, including drafts:

@@ -11,13 +11,17 @@ Use this skill to import a downloaded native session `.zip` bundle for read-only
 
 Invoke when a user types `/import-session`, asks to open a downloaded session bundle, or wants to inspect a shared Copilot CLI, Claude Code, or Codex CLI session export.
 
-## Host Capability & Onboarding Matrix
+## Supported Hosts
 
-| Host | Skill Discovery | MCP Startup | Interactive confirmation | Read-only import |
-| --- | --- | --- | --- | --- |
-| GitHub Copilot CLI | Automatic | `scripts/mcp-server.mjs` | Required | Supported |
-| Claude Code | Automatic | `scripts/mcp-server.mjs` | Required | Supported |
-| Codex CLI | Automatic | `scripts/mcp-server.mjs` | Required | Supported |
+| Host | Skill Discovery | Interactive confirmation | Read-only import |
+| --- | --- | --- | --- |
+| GitHub Copilot CLI | Automatic | Required | Supported |
+| Claude Code | Automatic | Required | Supported |
+| Codex CLI | Automatic | Required | Supported |
+
+## Transport Contract
+
+The `session-registry` MCP tools are the only interface to this workflow. Do not read the plugin's own files, run a package manager or build step, start the MCP server yourself, or write your own MCP client. Tools may load lazily, so call `import_session_bundle` even if you do not see it listed yet. If the tool is genuinely unresolvable, stop immediately and tell the user the `session-registry` MCP server is not connected in this host and to verify the plugin's installation before retrying.
 
 ## Execution Protocol
 

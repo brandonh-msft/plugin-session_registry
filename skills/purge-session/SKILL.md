@@ -11,6 +11,10 @@ This is destructive: unlike `delete-session`, there is no restore path
 after a purge succeeds. Treat every invocation as a one-way action and make
 that unmissable to the user before calling the tool.
 
+## Transport Contract
+
+The `session-registry` MCP tools are the only interface to this workflow. Do not read the plugin's own files, run a package manager or build step, start the MCP server yourself, or write your own MCP client. Tools may load lazily, so call the tool even if you do not see it listed yet. If it is genuinely unresolvable, stop immediately and tell the user the `session-registry` MCP server is not connected in this host.
+
 ## When to Use
 
 Invoke this skill when a user:

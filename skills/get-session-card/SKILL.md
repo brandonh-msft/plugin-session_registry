@@ -12,6 +12,10 @@ freshly-created PR body — pasting into an existing PR/MR by hand, a Slack
 message, a wiki page, or anywhere else a collaborator-facing card is
 wanted.
 
+## Transport Contract
+
+The `session-registry` MCP tools are the only interface to this workflow. Do not read the plugin's own files, run a package manager or build step, start the MCP server yourself, or write your own MCP client. Tools may load lazily, so call the tool even if you do not see it listed yet. If it is genuinely unresolvable, stop immediately and tell the user the `session-registry` MCP server is not connected in this host.
+
 ## When to Use
 
 Invoke this skill when a user:
