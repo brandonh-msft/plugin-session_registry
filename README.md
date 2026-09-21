@@ -147,9 +147,12 @@ agent are not always identical. This is a tool-routing failure, not proof that t
 server disconnected.
 
 The skills instruct the agent to resolve the host-exposed tool and schema through
-its tool discovery facility before calling it. If a stale session reports
-`unsupported call: save_session`, ask it to discover the `session-registry`
-`save_session` tool and use the exact returned identifier. Do not reinstall a
+its **tool** discovery/deferred-tool facility before calling it. If a stale
+session reports `unsupported call: save_session`, ask it to load the
+`session-registry` `save_session` tool and use the exact returned identifier
+(often `session-registry-save_session` in namespaced hosts). Do not ask it to
+call MCP resource discovery such as `resources/list` or `list_mcp_resources`;
+Session Registry exposes MCP tools, not MCP resources. Do not reinstall a
 connected server or bypass the host with a custom client. After a plugin update,
 start a new session to load the revised skills and server instructions.
 

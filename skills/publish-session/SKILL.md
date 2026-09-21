@@ -18,8 +18,13 @@ Use the **exact callable identifier** and schema exposed by this host for the
 **Do not invent a tool name or prefix**, and do not call bare `save_session` unless
 that exact identifier is exposed.
 
-**Tools may load lazily.** If the schema is deferred or missing, use the host's tool search or discovery
-facility to find `session-registry` + `save_session`, then invoke the returned tool.
+**Tools may load lazily.** If the schema is deferred or missing, use the host's
+tool search/deferred-tool loader to find `session-registry` + `save_session`;
+invoke the returned callable identifier. This is not MCP resource discovery: do
+not call `resources/list`, `list_mcp_resources`, or
+`session-registry.list_mcp_resources`. If the host namespaces server tools, the
+callable is often `session-registry-save_session`; load/search and invoke that
+exact identifier.
 Host-native discovery is required, not a replacement MCP client.
 An `unsupported call` for a bare name is **not evidence that the server is disconnected**.
 Resolve the actual identifier before retrying. A connected `/mcp` listing is evidence
@@ -43,19 +48,16 @@ Never replace native capture or owner-facing forms with your own implementation.
    Never ask the owner to transcribe an obscure UUID or search for a journal.
    Do not substitute an app workspace ID, rendered export, guessed source, or generated transcript.
 1. Call `save_session` with harness, interaction mode, source selector, and drafted
-   title (1-120 characters) and summary (1-500 characters) of the task, outcome,
-   and decisions. Honor owner-supplied metadata; never present a blank form.
-   Final metadata uses approved content only. The server rescans edits and marks
-   truncated over-limit metadata with `...`; native capture is never truncated.
+   title (1-120 characters) and summary (1-500 characters). Honor owner metadata;
+   never present a blank form. The server rescans edits and truncates only metadata.
 1. Preserve requested access and expiry. Otherwise default to anyone with the link
    (`audiencePolicy: {accessMode: "anonymous"}` or omit it) and 14 days (omit `expiresAt`).
    `expiresAt: null` means never expire, not the default. Never invent recipients
    or downgrade restricted access. Follow the discovered schema for structured policy inputs;
    form values can include `anyone`, `org:<org>`, `team:<org>/<team>`, or `users:<users>`.
-1. Let the server capture, scan locally, drive owner decisions, and upload only
-   the approved native package. Report its finding count, including zero.
-   Use `prepare_session_capture` then `publish_session` only for local capture or
-   advanced review; they are not a bypass for the confirmation sequence.
+1. Let the server capture, scan, drive owner decisions, and upload only approved
+   native content. Report the finding count. Use `prepare_session_capture` then
+   `publish_session` only for local capture or advanced review, not as a bypass.
 
 Relay configuration and authorization errors; the server owns credentials and registration.
 
@@ -99,8 +101,8 @@ Urgency, "just publish it", or a demo never authorize headless mode in live chat
 
 ## Errors and retries
 
-- **Routing failure:** return to host tool discovery, not environment probing.
-  Retry only after resolving a real callable identifier; do not cycle through guessed names.
+- **Routing failure:** return to host tool search, not resource discovery or
+  environment probing. Retry only after resolving a real callable identifier.
 - **Ambiguous, unsupported, missing, stale, or mismatched native source:** report
   the precise server error. Never substitute another session or synthetic history.
 - **`UNSUPPORTED_DEPENDENCY` / `MISSING_DEPENDENCY`:** the error lists resolved
