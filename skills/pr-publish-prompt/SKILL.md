@@ -10,7 +10,9 @@ Use this skill immediately before issuing any pull/merge-request-creating tool c
 
 ## Transport Contract
 
-The `session-registry` MCP tools are the only interface to this workflow. Do not read the plugin's own files, run a package manager or build step, start the MCP server yourself, or write your own MCP client. Tools may load lazily, so call the tool even if you do not see it listed yet. If it is genuinely unresolvable, stop immediately and tell the user the `session-registry` MCP server is not connected in this host.
+The `session-registry` MCP tools are the only interface to this workflow. Do not read the plugin's own files, run a package manager or build step, start the MCP server yourself, or write your own MCP client.
+
+Operation names below are not necessarily callable host identifiers. Use the exact callable identifier and schema exposed by the host. Tools may load lazily: use the host's tool search or discovery facility for `session-registry` and the required operation before calling a deferred tool. Do not invent a tool name or prefix or call a bare operation unless that identifier is exposed. An `unsupported call` is not evidence that the server is disconnected; resolve the actual identifier before retrying. If discovery cannot expose it, stop and report that the tool cannot be resolved in this turn, including the actual routing error. Claim disconnection only if the host explicitly reports it. Host-native discovery is allowed; replacement clients are not. Relay resolved tool errors as tool errors.
 
 ## When to Use
 

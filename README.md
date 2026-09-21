@@ -75,7 +75,11 @@ Verify:
 
 ```bash
 copilot plugin list
+copilot mcp get session-registry
 ```
+
+Then start a new session and run `/mcp` to confirm the server is connected.
+Seeing the plugin or its skills listed does not prove its MCP server loaded.
 
 ### Claude Code
 
@@ -115,7 +119,39 @@ Verify the MCP side is up with `/mcp`; you should see `session-registry` listed.
 
 ### After installing
 
-No additional setup. Sessions publish to `https://sessionregistry.io`, and your first publish registers you automatically.
+Use Node.js 24 or later on your `PATH`. The plugin includes the ready-to-run MCP server;
+there is no dependency install or build step. Sessions publish to `https://sessionregistry.io`,
+and your first publish registers you automatically.
+
+### If the skills load but the MCP server is missing
+
+Plugin version 1.0.0 shipped only the portable `mcp.json` configuration. Copilot CLI
+1.0.70 and Claude Code use `.mcp.json` for plugin MCP discovery, so they could load
+the skills without connecting the server. Updated artifacts include both configurations.
+
+In Copilot CLI, update the plugin with
+`copilot plugin update session-registry@brandonh-msft-plugins`, then fully exit and
+restart the CLI. Check `copilot --version` in the terminal you actually use: an
+older running process or another installation on `PATH` may differ from a newly
+opened terminal. Copilot CLI 1.0.87 can also discover the original portable configuration.
+
+If `/mcp` shows the server but reports a startup failure, check that `node --version`
+reports 24 or later and read the server's startup error. Do not install dependencies
+inside the plugin or replace the host's MCP connection with a script.
+
+### If `/mcp` says connected but the agent says otherwise
+
+A host can list all 12 server tools while the agent calls an unsupported bare name
+such as `save_session`. MCP operation names and the callable names exposed to the
+agent are not always identical. This is a tool-routing failure, not proof that the
+server disconnected.
+
+The skills instruct the agent to resolve the host-exposed tool and schema through
+its tool discovery facility before calling it. If a stale session reports
+`unsupported call: save_session`, ask it to discover the `session-registry`
+`save_session` tool and use the exact returned identifier. Do not reinstall a
+connected server or bypass the host with a custom client. After a plugin update,
+start a new session to load the revised skills and server instructions.
 
 ## Security & privacy
 
