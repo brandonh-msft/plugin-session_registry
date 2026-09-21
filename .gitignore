@@ -1,0 +1,21 @@
+# Dependencies and package-manager state
+node_modules/
+.pnpm-store/
+.npm/
+
+# Local build/test state
+coverage/
+*.tsbuildinfo
+*.log
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+.mcp.json
+
+# OS/editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
