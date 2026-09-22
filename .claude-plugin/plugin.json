@@ -4,7 +4,7 @@
     "url": "https://github.com/brandonh-msft"
   },
   "name": "session-registry",
-  "version": "1.0.4-2",
+  "version": "1.0.4-3",
   "keywords": [
     "sessions",
     "publishing",
@@ -14,5 +14,6 @@
   ],
   "description": "Capture, scan, publish, and share native AI agent sessions securely.",
   "homepage": "https://sessionregistry.io",
-  "repository": "https://github.com/brandonh-msft/plugin-session_registry"
+  "repository": "https://github.com/brandonh-msft/plugin-session_registry",
+  "mcpServers": "mcp.json"
 }
