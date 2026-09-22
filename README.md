@@ -126,8 +126,8 @@ and your first publish registers you automatically.
 ### If the skills load but the MCP server is missing
 
 Plugin version 1.0.0 shipped only the portable `mcp.json` configuration. Copilot CLI
-1.0.70 uses the portable `mcp.json`, while Claude Code uses the generated
-`.claude-plugin/plugin.json` reference to its sibling `.claude-plugin/mcp.json`.
+1.0.70 uses the portable `mcp.json`, while Claude Code reads the MCP server
+configuration inlined in the generated `.claude-plugin/plugin.json`.
 An updated artifact includes both host projections without creating a root
 `.mcp.json`.
 
