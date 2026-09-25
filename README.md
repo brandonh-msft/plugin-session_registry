@@ -43,6 +43,14 @@ The plugin works best with CLI tools that capture sessions natively:
 
 VS Code and GitHub Copilot Desktop have limited support; use one of the CLI tools for the best experience.
 
+The MCP server selects CLI sessions from native state. Copilot uses its
+profile-guarded runtime session ID. Supported Codex requests carry a
+request-scoped thread ID that the server verifies in the configured Codex
+profile. Claude Code uses an explicit native selector when available, or one
+unique exact user-message and workspace match; its process startup ID is not
+treated as current after resume or session switching. Explicit native IDs and
+paths always take precedence.
+
 ## Quick start
 
 1. Install the plugin (see [Installation](#installation) below).

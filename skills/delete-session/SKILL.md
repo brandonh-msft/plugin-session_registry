@@ -1,6 +1,6 @@
 ---
 name: delete-session
-description: Soft-delete (tombstone) a previously published Session Registry session by its published sessionId, so it stops resolving for viewers while remaining recoverable.
+description: Soft-delete (tombstone) a previously published Session Registry session by its collaborator-facing share URL, so it stops resolving for viewers while remaining recoverable.
 ---
 
 # `delete-session` Agentic Skill
@@ -29,30 +29,42 @@ Invoke this skill when a user:
 Do not invoke `purge-session` or `purge-sessions` in response to these
 phrases — those are separate, irreversible operations.
 
-## `sessionId` Disambiguation (read this first)
+## `shareUrl` (read this first)
 
-`delete_session` takes exactly one input: `sessionId`, the **opaque id
-returned by the original `publish_session` or `save_session` tool result**
-(the JSON field literally named `sessionId`). This is **not**:
+`delete_session` accepts exactly one input: `shareUrl`, the
+collaborator-facing share URL a viewer was given
+(`.../session/<harnessSessionId>/<linkId>`), exactly as it appears in a
+publish result or `get_share_card` output. The server resolves this to
+the owning session's internal id itself, enforcing the same
+ownership check the delete itself performs — it never trusts the URL's
+identity, only what the caller's bearer token proves they own. There is
+no opaque-sessionId input; never dig one out of an old tool result or
+guess at one.
+
+Never confuse `shareUrl` with the distinct identifier also present in a
+publish result:
 
 - `harnessSessionId` — the native harness's own session identifier
-  (e.g. `COPILOT_AGENT_SESSION_ID`), also present in that same result.
-- The `linkId` segment embedded in the collaborator share URL
-  (`.../session/<harnessSessionId>/<linkId>`).
+  (e.g. `COPILOT_AGENT_SESSION_ID`).
 
-If the user only has a share URL or remembers the harness session id, do
-not guess or substitute one of those other values as `sessionId`. Instead:
+If the user only remembers the harness session id and does not have the
+share URL, do not guess. Instead:
 
-- If the original `publish_session`/`save_session` tool result is still
-  visible earlier in this conversation, read the true `sessionId` from it.
-- Otherwise, ask the user to paste the `sessionId` value from that original
-  publish result (not the share URL, and not the harness session id).
+- If the original `publish_session`/`save_session` tool result (or a
+  `shareUrl` the user was given) is still visible earlier in this
+  conversation, use it directly.
+- Otherwise, ask the user to paste the share URL they were given — not
+  the harness session id.
+
+A malformed or unrecognized `shareUrl` (wrong shape, different site, typo)
+is rejected before any request reaches the backend; report that plainly
+and ask the user to re-paste the URL rather than guessing at a fix.
 
 ## Execution Protocol
 
-1. Resolve the true `sessionId` per the disambiguation rule above. Do not
-   call the tool with a guessed or substituted id.
-2. Call `delete_session` with `{ sessionId }`.
+1. Resolve the `shareUrl` the user actually has. Do not call the tool
+   with a guessed or substituted identifier.
+2. Call `delete_session` with `{ shareUrl }`.
 3. Report the result plainly, distinguishing the two possible outcomes:
    - `outcome: "deleted"` — the session is now tombstoned; its share link
      and download will stop resolving for viewers.
@@ -65,12 +77,12 @@ not guess or substitute one of those other values as `sessionId`. Instead:
 ## Safety Rules
 
 - Ownership is enforced entirely server-side from the caller's configured
-  bearer token; never ask the user to prove ownership some other way, and
-  never attempt to delete a session on another user's behalf by supplying
-  a different credential.
-- If the tool reports the session was not found or not owned by the
-  caller, say so plainly — do not retry with a different guessed
-  `sessionId`.
+  bearer token — never ask the user to prove ownership some other way,
+  and never attempt to delete a session on another user's behalf by
+  supplying a different credential.
+- If the tool reports the share link a `shareUrl` resolved to was not
+  found or not owned by the caller, say so plainly — do not retry with a
+  different guessed URL.
 - Never describe this action as permanent, irreversible, or as freeing
   storage/blob space — that is `purge-session`/`purge-sessions`, not this
   tool.
@@ -82,5 +94,5 @@ not guess or substitute one of those other values as `sessionId`. Instead:
 ```
 
 ```text
-User: delete the session I published earlier, sessionId sess_3f9c1e2a-...
+User: delete this one — https://registry.example.com/session/hs1/link_9f2c
 ```
