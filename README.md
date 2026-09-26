@@ -22,6 +22,8 @@ Session Registry fixes that by:
 
 Run `/publish-session` to capture, scan, and publish the current agent session. You'll confirm an auto-generated title and summary, choose who can view it (public, GitHub organization, GitHub team, or specific GitHub users), set an expiration (default 14 days, a different duration, or never), and receive a private share link.
 
+The server returns a complete success receipt using the API's original share URL. Copy the raw URL as shown; the server does not rebuild or shorten it. The host may make that line clickable. An agent can still rewrite its final chat response, so use the raw URL in the tool receipt if the chat link is missing or changed.
+
 ### Import and review a shared session
 
 When a teammate shares a session with you, run `/import-session` with the downloaded ZIP file to extract and review it in a private, read-only workspace. You can browse the full conversation, attachments, and context the agent had without executing anything.
@@ -58,7 +60,7 @@ paths always take precedence.
 3. The plugin captures your session and scans it locally for secrets.
 4. Review the findings and decide what to redact.
 5. Confirm the auto-generated title, summary, audience, and expiration.
-6. Get back a share URL — send it to anyone who needs to review your session.
+6. Get back a server-authored receipt with the share URL — send the raw URL to anyone who needs to review your session.
 
 ## Installation
 
