@@ -4,7 +4,7 @@
     "url": "https://github.com/brandonh-msft"
   },
   "name": "session-registry",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "keywords": [
     "sessions",
     "publishing",
@@ -39,5 +39,19 @@
         "SESSION_REGISTRY_API_URL": "https://sessionregistry.io"
       }
     }
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__(plugin_session-registry_)?session-registry__(save_session|prepare_session_capture|publish_session)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/server.mjs\" --claude-current-session",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }

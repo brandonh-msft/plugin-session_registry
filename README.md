@@ -48,10 +48,14 @@ VS Code and GitHub Copilot Desktop have limited support; use one of the CLI tool
 The MCP server selects CLI sessions from native state. Copilot uses its
 profile-guarded runtime session ID. Supported Codex requests carry a
 request-scoped thread ID that the server verifies in the configured Codex
-profile. Claude Code uses an explicit native selector when available, or one
-unique exact user-message and workspace match; its process startup ID is not
-treated as current after resume or session switching. Explicit native IDs and
-paths always take precedence.
+profile. Claude Code's plugin hook supplies the current session ID, transcript
+path, and working directory for each publish-tool call. It signs those values
+with a short-lived, one-use proof tied to the tool operation. The server checks
+the proof and journal ID before selecting the source. Claude does not need to
+copy recent conversation turns into the tool request when the proof is valid.
+If the proof is missing or invalid, the server treats any supplied ID or path
+as a hint and requires an exact, unique match against the newest recent
+conversation turns instead.
 
 ## Quick start
 
@@ -132,6 +136,24 @@ Verify the MCP side is up with `/mcp`; you should see `session-registry` listed.
 Use Node.js 24 or later on your `PATH`. The plugin includes the ready-to-run MCP server;
 there is no dependency install or build step. Sessions publish to `https://sessionregistry.io`,
 and your first publish registers you automatically.
+
+### How the CLI selects your session
+
+Keep using `/publish-session`. In Copilot CLI, Codex CLI, and Claude Code CLI,
+the plugin publishes the current conversation, not a manually selected older
+session. Copilot and supported Codex connections supply active native IDs.
+Claude's plugin hook supplies the current ID and journal path on each call;
+the server also verifies recent conversation content rather than trusting
+an arbitrary ID argument.
+
+When automatic identity is unavailable, the agent supplies 3–6 recent
+verbatim user and assistant turns from its current context, ending with the
+latest user prompt. The server compares the entire window with the latest
+eligible native history and requires a unique match. One matching prompt or
+an older matching excerpt is not enough. It retries short persistence delays
+before reporting a mismatch or insufficient evidence. You do not need to find a session UUID,
+locate a journal, or use another publishing command. These changes do not alter
+IDE or desktop capture selection.
 
 ### If the skills load but the MCP server is missing
 
