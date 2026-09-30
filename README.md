@@ -42,8 +42,14 @@ The plugin works best with CLI tools that capture sessions natively:
 - **GitHub Copilot CLI** — Full support
 - **Claude Code** — Full support
 - **Codex CLI** — Full support
+- **VS Code Copilot Chat** (local chats, stable and Insiders) — Publish the current chat, including from the PR share-card prompt, with no setup
 
-VS Code and GitHub Copilot Desktop have limited support; use one of the CLI tools for the best experience.
+Other VS Code session kinds (Agent Host and remote windows) and GitHub Copilot Desktop have limited support; use one of the CLI tools for the best experience.
+
+In VS Code, the server reads the current chat's ID from each tool call and
+finds VS Code's local chat store automatically. VS Code keeps its own
+copy of the plugin, so update the plugin in VS Code too after you update it
+elsewhere.
 
 The MCP server selects CLI sessions from native state. Copilot uses its
 profile-guarded runtime session ID. Supported Codex requests carry a
@@ -270,6 +276,10 @@ The full native session: your conversation, all files the agent created or attac
 
 **Q: Can I edit a session after publishing?**
 No. If you need changes, publish a new session with the updated content.
+
+**Q: Why does a large session take time after I approve its metadata?**
+The plugin checks your final redactions against the full captured source before uploading. It sends progress updates while reviewing and lets cancellation stop the request before upload. Individual file-processing steps can still take time. Review no longer builds an extra ZIP; the approved bundle is staged once for publication. Progress does not extend a client's fixed wall-clock deadline.
+
 ## Troubleshooting
 
 | Error | What happened | What to do |
@@ -277,6 +287,9 @@ No. If you need changes, publish a new session with the updated content.
 | `PUBLISH STATE UNKNOWN` | The upload timed out or lost its connection, so the outcome is unclear | Retry the same command. Retries are idempotent, so you won't get a duplicate session |
 | `CAPTURE NOT FOUND` | The local capture files were deleted or moved | Check for an existing share link first — the session may have published already. Otherwise publish a fresh session |
 | `SECURITY REVIEW REQUIRED` | Detected secrets still need a decision, so nothing uploaded | Review each finding and choose to redact it or leave it as-is, then publish again |
-| `UNSUPPORTED_DEPENDENCY` / `MISSING_DEPENDENCY` | The session references a file outside its own folder that you haven't authorized | The error lists the exact paths it needs. Approve them and retry |
+| `MISSING_DEPENDENCY` | A referenced historical file is missing from its recorded path | If the owner has the relocated historical copy, map that exact reference to the current file and retry |
+| `UNSUPPORTED_DEPENDENCY` | The selected host source contains a dependency format this adapter cannot decode | Report the error; do not treat it as a request to authorize arbitrary files |
 | Not found or not owned by you | The session belongs to a different publisher, or the id is wrong | Only the original publisher can manage a session. Confirm you're using the `sessionId` from the original publish result, not the share URL |
 | Import fails | The ZIP is incomplete, invalid, or failed hash verification | Re-download the bundle and try again. Treat bundles from untrusted sources carefully — imports are read-only, but untrusted content can still influence your agent |
+
+- `SESSION_REGISTRY_CAPTURE_TIMEOUT_MS` sets how long, in milliseconds, native capture may go without making progress before it stops. A large session that keeps making progress is not cut off. Default: 30000. Invalid, zero, or negative values fail clearly.

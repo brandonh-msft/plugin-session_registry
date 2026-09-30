@@ -4,7 +4,7 @@
     "url": "https://github.com/brandonh-msft"
   },
   "name": "session-registry",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "keywords": [
     "sessions",
     "publishing",
@@ -37,7 +37,8 @@
       "cwd": "${CLAUDE_PLUGIN_ROOT}",
       "env": {
         "SESSION_REGISTRY_API_URL": "https://sessionregistry.io"
-      }
+      },
+      "timeout": 2147483647
     }
   },
   "hooks": {
