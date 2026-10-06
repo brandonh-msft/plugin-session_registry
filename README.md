@@ -14,7 +14,7 @@ Session Registry fixes that by:
 - scanning locally before anything leaves the machine
 - publishing only approved session content
 - enforcing access policy and expiry controls
-- keeping lifecycle actions explicit: publish, import, delete, and purge
+- keeping lifecycle actions explicit: publish, import, restore, delete, and purge
 
 ## What you can do
 
@@ -31,6 +31,7 @@ When a teammate shares a session with you, run `/import-session` with the downlo
 ### Manage published sessions
 
 - Get the markdown share card for pasting into PRs, etc. with `/get-session-card`
+- Restore a session you previously deleted with `/restore-session`
 - Take a published session offline with `/delete-session` (reversible)
 - Permanently remove a session with `/purge-session` after deleting it (irreversible)
 - Permanently remove all your deleted sessions with `/purge-sessions` in one step
@@ -141,7 +142,9 @@ Verify the MCP side is up with `/mcp`; you should see `session-registry` listed.
 
 Use Node.js 24 or later on your `PATH`. The plugin includes the ready-to-run MCP server;
 there is no dependency install or build step. Sessions publish to `https://sessionregistry.io`,
-and your first publish registers you automatically.
+and your first publish registers you automatically. If you're signed in to the GitHub CLI (`gh`)
+and have published from another machine, that first publish connects you to your existing
+publisher instead of creating a new one, so you can manage those sessions here too.
 
 ### How the CLI selects your session
 
@@ -186,15 +189,7 @@ such as `save_session`. MCP operation names and the callable names exposed to th
 agent are not always identical. This is a tool-routing failure, not proof that the
 server disconnected.
 
-The skills instruct the agent to resolve the host-exposed tool and schema through
-its **tool** discovery/deferred-tool facility before calling it. If a stale
-session reports `unsupported call: save_session`, ask it to load the
-`session-registry` `save_session` tool and use the exact returned identifier
-(often `session-registry-save_session` in namespaced hosts). Do not ask it to
-call MCP resource discovery such as `resources/list` or `list_mcp_resources`;
-Session Registry exposes MCP tools, not MCP resources. Do not reinstall a
-connected server or bypass the host with a custom client. After a plugin update,
-start a new session to load the revised skills and server instructions.
+Use the exact callable identifier and schema the host exposes. In Copilot CLI, search for the exact operation name, such as `session-registry-save_session`. Claude Code's plugin tool name includes the plugin and server namespaces, for example `mcp__plugin_session-registry_session-registry__save_session`. Codex may list tools directly without `tool_search`; use its exact namespace and operation as separate values, and never concatenate them. Do not use MCP resource discovery such as `resources/list` or `list_mcp_resources`; Session Registry exposes tools, not resources. An `unsupported call` is not evidence that the server is disconnected. Do not reinstall a connected server or bypass the host with a custom client. After a plugin update, start a new session to load the revised skills and server instructions.
 
 ## Security & privacy
 
@@ -237,6 +232,7 @@ Install plugin
 | `/publish-session` | Capture, scan, and publish your session | Share URL + metadata |
 | `/import-session <zip-file>` | Import a downloaded session for review | Read-only workspace access |
 | `/get-session-card` | Get the PR-ready share card markdown | Copyable markdown card |
+| `/restore-session` | Restore a session you deleted | Session becomes available again |
 | `/delete-session` | Stop sharing a published session | Confirmation (reversible) |
 | `/purge-session` | Permanently remove a deleted session | Confirmation (irreversible) |
 | `/purge-sessions` | Permanently remove ALL deleted sessions | Bulk confirmation |
@@ -284,7 +280,8 @@ The plugin checks your final redactions against the full captured source before 
 
 | Error | What happened | What to do |
 | --- | --- | --- |
-| `PUBLISH STATE UNKNOWN` | The upload timed out or lost its connection, so the outcome is unclear | Retry the same command. Retries are idempotent, so you won't get a duplicate session |
+| `PUBLISH FAILED` | The server classified a failed publish step and returned retry guidance | Follow `automaticRetry`, `retryAfterSeconds`, and the exact `retryRequest`. After the retry limit, tell the owner and stop. If the result includes `resume`, a later owner-requested retry calls `save_session` with that `captureId` and `resume: true`, which reuses the recorded decisions without new forms |
+| `PUBLISH STATE UNKNOWN` | The registry did not return a trustworthy receipt, so the session may have published | Keep the same `captureId` and confirmed values. Retry only when the returned continuation allows it; never recapture or claim success without the full share URL |
 | `CAPTURE NOT FOUND` | The local capture files were deleted or moved | Check for an existing share link first — the session may have published already. Otherwise publish a fresh session |
 | `SECURITY REVIEW REQUIRED` | Detected secrets still need a decision, so nothing uploaded | Review each finding and choose to redact it or leave it as-is, then publish again |
 | `MISSING_DEPENDENCY` | A referenced historical file is missing from its recorded path | If the owner has the relocated historical copy, map that exact reference to the current file and retry |

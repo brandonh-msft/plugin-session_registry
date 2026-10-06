@@ -4,7 +4,7 @@
     "url": "https://github.com/brandonh-msft"
   },
   "name": "session-registry",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "keywords": [
     "sessions",
     "publishing",
@@ -44,7 +44,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^mcp__(plugin_session-registry_)?session-registry__(save_session|prepare_session_capture|publish_session)$",
+        "matcher": "^mcp__(?:plugin_session-registry_session-registry|session-registry)__(save_session|prepare_session_capture|publish_session)$",
         "hooks": [
           {
             "type": "command",

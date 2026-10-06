@@ -15,7 +15,19 @@ that unmissable to the user before calling the tool.
 
 The `session-registry` MCP tools are the only interface to this workflow. Do not read the plugin's own files, run a package manager or build step, start the MCP server yourself, or write your own MCP client.
 
-Operation names below are not necessarily callable host identifiers. Use the exact callable identifier and schema exposed by the host. Tools may load lazily: use the host's tool search/deferred-tool loader for `session-registry` and the required operation before calling a deferred tool. Host-native tool discovery is not MCP resource discovery; do not call `resources/list`, `list_mcp_resources`, `session-registry.list_mcp_resources`, or any invented discovery operation on this server. If the host namespaces server tools, the callable commonly looks like `session-registry-purge_session`; load/search and invoke the exact exposed identifier. Do not invent a tool name or prefix or call a bare operation unless that identifier is exposed. An `unsupported call` is not evidence that the server is disconnected; resolve the actual identifier before retrying. If discovery cannot expose it, stop and report that the tool cannot be resolved in this turn, including the actual routing error. Claim disconnection only if the host explicitly reports it. Host-native tool discovery is allowed; replacement clients are not. Relay resolved tool errors as tool errors.
+Operation names are MCP names, not guaranteed callable identifiers. Use the host's exact callable identifier and schema when already exposed. Otherwise use the host's tool search or discovery with the query template below. Codex may expose tools directly without a search tool; use its exact advertised namespace and operation as separate values. Do not concatenate them or invent a tool name or prefix. Tool search is not MCP resource discovery: never call `resources/list` or `list_mcp_resources`. An `unsupported call` is not evidence the server is disconnected. If unresolved, stop and report the routing error; never write your own MCP client. Relay resolved tool errors as tool errors.
+
+
+<!-- routing-operations: purge_session -->
+<!-- routing:begin -->
+Ops: `purge_session`
+- Copilot name: `session-registry-<operation>`
+- Copilot query: `session-registry-<operation>`
+- Claude name: `mcp__plugin_session-registry_session-registry__<operation>`
+- Claude query: `mcp__plugin_session-registry_session-registry__<operation>`
+- Codex name: `namespace=<host-exposed namespace>, name=<operation>`
+- Codex query (only when native tool search is available): `<operation>`
+<!-- routing:end -->
 
 ## When to Use
 

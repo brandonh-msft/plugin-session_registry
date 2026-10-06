@@ -12,39 +12,41 @@ Never skip secret decisions or the metadata form.
 
 ## Transport Contract - Resolve the host tool first
 
-Use the host's **exact callable identifier and schema**. Do not invent a prefix.
-Use host tool search/deferred-tool loader for `session-registry` + `save_session`
-(often callable `session-registry-save_session`), not MCP resource discovery:
-`resources/list`, `list_mcp_resources`, or `session-registry.list_mcp_resources`.
-An `unsupported call` is not evidence that the server is disconnected.
-Resolve again or report routing failure; claim disconnection only on host evidence.
+Use the host's **exact callable identifier and schema** when already exposed. Otherwise use the host's tool search or discovery with the query template below. Codex may expose tools directly without a search tool; use its exact advertised namespace and operation as separate values. Do not concatenate them or invent a tool name or prefix. Host discovery is not MCP resource discovery; never call `resources/list` or `list_mcp_resources`. An `unsupported call` is not evidence the server is disconnected: resolve the actual identifier or stop and report the routing failure. Claim disconnection only on host evidence; relay tool errors unchanged.
 
-The MCP tools are the only interface. Do not read the plugin's own files, run a
-package manager or build step, start the server, or write your own MCP client.
-Never replace native capture or owner-facing forms.
+The MCP tools are the only interface. Do not read the plugin's own files, run a package manager or build step, start the server, or write your own MCP client; never replace native capture or forms.
+
+<!-- routing-operations: save_session, prepare_session_capture, publish_session -->
+<!-- routing:begin -->
+Ops: `save_session`, `prepare_session_capture`, `publish_session`
+- Copilot name: `session-registry-<operation>`
+- Copilot query: `session-registry-<operation>`
+- Claude name: `mcp__plugin_session-registry_session-registry__<operation>`
+- Claude query: `mcp__plugin_session-registry_session-registry__<operation>`
+- Codex name: `namespace=<host-exposed namespace>, name=<operation>`
+- Codex query (only when native tool search is available): `<operation>`
+<!-- routing:end -->
 
 ## Capture and publish
 
-1. Resolve every operation below using the host-routing rule.
 1. Identify the harness: `github-copilot-cli`, `claude-code`, or `codex-cli`.
-   VS Code Copilot Chat: `vscode-copilot-chat`, no selector; the host
-   supplies identity.
-   Publish only the current session. Copilot uses its profile-guarded runtime
-   ID; supported Codex calls carry a verified thread ID. Explicit selectors
-   cannot override active identity. Claude's plugin hook supplies current
-   ID/path from each matching MCP invocation; the server checks the ID in
-   Claude's native journal. Without a host ID, pass absolute `workingDirectory`
-   and a `verificationWindow` of 3-6 ordered, verbatim `{role, text}` turns
-   (32 KiB max): two distinct user turns and one assistant turn.
-   `recentUserMessage` must be the final user turn. Match the whole window
-   exactly to the newest native turns. Don't use old excerpts, summaries, tool
-   output, or candidate journals. Join text blocks with newlines. Never ask for
-   IDs or paths.
-1. Call `save_session` with harness, interaction mode, source selector, and drafted
-   title (1-120 characters) and summary (1-500 characters). Honor owner metadata.
-   The server rescans edits and truncates only metadata. Every invocation is a fresh publication:
-   describe the substantive task, outcome, and decisions. Never title or summarize the slash command, publication request/process,
-   prior receipt, or share link.
+   In VS Code Copilot Chat use `vscode-copilot-chat` with no selector.
+   Publish only the current session; selectors never override host identity.
+   Copilot uses its profile-guarded runtime ID; Codex requires a verified thread
+   ID; Claude's hook supplies current ID/path, which the server checks against
+   its native journal. Without a host ID, pass absolute `workingDirectory` and
+   the newest exact `verificationWindow`: 3-6 ordered, verbatim `{role, text}`
+   turns (two distinct user turns and one assistant; 32 KiB max).
+   `recentUserMessage` is the last user turn. Exclude excerpts, summaries, tool
+   output, and candidate journals; join text blocks with newlines. Never ask
+   for IDs or paths.
+1. Call `save_session` with harness, interaction mode, source selector, a drafted
+   title (1-120 characters), and summary (1-500 characters). Honor owner edits;
+   the server rescans and truncates metadata.
+   Every invocation is a fresh publication about the substantive task, outcome,
+   and decisions. Never title
+   or summarize the slash command, publication request/process, prior receipt,
+   or share link.
    `prepare_session_capture` is for local capture only, with the interactive
    **Codex App** exception; never a bypass of
    `save_session` for `github-copilot-cli`, `claude-code`, or Codex CLI.
@@ -65,13 +67,11 @@ Never bundle fields into a single run-on prompt.
    individual review, or explicit unredacted override. Individual review offers
    redact, keep, or custom replacement.
    Never decide findings, redactions, or overrides on the owner's behalf.
-1. **One-shot metadata form**: title, summary, audience, expiration, and optional
-   `additionalRedactions`, prefilled for confirmation/edits. Each target becomes
-   an exact-text rule applied to native content and metadata. In GHCP and Claude,
-   accepting this completed form is final approval and publication proceeds
-   without another confirmation UI.
+1. **One-shot metadata form**: prefilled title, summary, audience, expiration,
+   and optional `additionalRedactions`. Each target becomes an exact-text rule
+   applied to native content and metadata.
 1. **Codex CLI only**: after its sequential metadata questions, show the
-   separate, non-editable recap and require native Accept before upload.
+   non-editable recap and require native Accept before upload.
 
 For interactive Codex App or a no-elicitation proposal, show these fields and wait:
 
@@ -84,9 +84,9 @@ For interactive Codex App or a no-elicitation proposal, show these fields and wa
 ```
 
 Never compress these into one paragraph or question. Resolve findings first; rendering
-never skips the secret gate. For GHCP or Claude, the reply is final approval: retry
-`save_session` with the returned request and edits. For Codex, show the non-editable recap
-and wait again. Only its explicit publish response authorizes `publish_session` with that
+never skips the secret gate. For GHCP or Claude, the reply is final approval; retry
+`save_session` with the returned request and edits. For Codex, show the non-editable
+recap and wait again. Only its explicit publish response authorizes `publish_session` with that
 `captureId`, confirmed values, resolutions, `confirmed: true`, and
 `additionalRedactionsConfirmed: true` when findings existed.
 
@@ -97,38 +97,34 @@ Urgency, "just publish it", or a demo never authorize headless mode in live chat
 
 ## Errors and retries
 
-- **Routing failure:** use host tool search, not resource discovery or environment probing.
-- **Ambiguous, unsupported, missing, stale, or mismatched native source:** report
-  the precise server error. Never substitute another session or synthetic history.
+- **Routing failure:** use host tool search only; never probe MCP resources or the environment.
+- **Source errors:** relay it; never substitute a session or synthetic history.
 - **`CURRENT_SESSION_EVIDENCE_REQUIRED` / `CURRENT_SESSION_NOT_VERIFIED`:**
-  retry with the newest complete turns from current context. The server retries
-  write delays. If verification still fails, report the limitation. Never invent
-  turns, request historical IDs/paths, or redirect to a native publisher.
-- **`MISSING_DEPENDENCY`:** a referenced file is missing. Use
-  `dependencyMappings` only for an owner-supplied relocated historical copy;
-  existing references are captured automatically. Never search or substitute.
-- **`UNSUPPORTED_DEPENDENCY`:** the host dependency format cannot be decoded.
-  Report the error; do not retry it as file authorization.
-- **Security findings:** keep the capture, collect explicit owner decisions, and
-  regenerate metadata only from approved content. Do not suppress scan failures.
-- **Unmatched owner redactions:** do not block publication; check the applied-redaction count.
-- **`confirmation-timeout`:** report the expired form and stop. This attempt
-  uploaded nothing. Use its `retryRequest` only when the owner asks to resume;
-  re-collect required approvals. Never auto-answer or switch to noninteractive.
-- **Transport timeout without a server-issued `retryRequest`:** stop; the first
-  handler may still be running. Never start another save or invent a publish
-  request. Report the unknown outcome; do not claim nothing was uploaded.
-- **`PUBLISH_STATE_UNKNOWN` or unknown network outcome:** retry the exact
-  returned request with the same `captureId` and confirmed values. Never recapture
-  or generate a replacement ID. Claim success only when the full share URL is returned.
-  When automatic CLI identity is unavailable, refresh only `currentSession`
-  evidence from the current conversation. Do not reuse stale evidence after
-  switching sessions; resume the original session for a necessary retry.
+  retry with the newest complete turns. If still unverified, report it; never
+  invent turns, reuse historical IDs/paths, or redirect to a native publisher.
+- **`MISSING_DEPENDENCY`:** use `dependencyMappings` only for owner-supplied
+  relocated files; never search or substitute.
+- **`UNSUPPORTED_DEPENDENCY`:** report the decode error; never treat it as file authorization.
+- **Security findings:** collect explicit owner decisions and regenerate metadata
+  only from approved content. Never suppress scan failures.
+- **Unmatched owner redactions:** check the applied-redaction count; they do not block publication.
+- **`confirmation-timeout`:** report expired form; no upload. Retry only
+  if the owner asks, after recollecting approvals. Never auto-answer or switch to noninteractive.
+- **`PUBLISH FAILED`:** while `automaticRetry` is true, wait `retryAfterSeconds` and
+  call `structuredContent.nextCall` with the unchanged `retryRequest`. Otherwise
+  relay `ownerMessage` and stop. If `structuredContent` is missing, use adjacent
+  JSON. Refresh only `currentSession` evidence when required; never redo forms.
+  On an owner-requested retry of a result with `resume`, call `save_session`
+  with its `captureId`, `resume: true`, same harness/interactionMode.
+- **Transport timeout without a server `retryRequest`:** stop; the handler may
+  still run, so report the outcome as unknown.
+- **`PUBLISH_STATE_UNKNOWN`:** use any server `retryRequest` unchanged; refresh
+  `currentSession` only if needed. Without one, stop. Never recapture; claim
+  success only with the full share URL.
 
 ## Share output
 
-Relay the complete server-authored publication receipt unchanged. Copy the
-raw API `shareUrl` exactly. Never reconstruct, normalize, shorten, substitute,
-rehost, or omit it. Keep it available for copying. Don't publish again or fetch
-a share card to verify it. The server controls its MCP result, not the final
-assistant response; don't claim host rendering is guaranteed.
+Relay the server-authored publication receipt unchanged; copy its raw API `shareUrl` exactly.
+Never reconstruct, normalize, shorten, substitute, rehost, or omit it. Don't
+republish or fetch a card to verify. The server controls its MCP result, not the final
+assistant response; host rendering is not guaranteed.
