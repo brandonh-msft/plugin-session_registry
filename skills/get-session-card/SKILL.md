@@ -1,6 +1,6 @@
 ---
 name: get-session-card
-description: Retrieve the PR-Ready Share Card Markdown for an already-published Session Registry session, returned verbatim with no wrapping commentary.
+description: Retrieve the PR-Ready Share Card Markdown for an already-published Session Registry session, returned in a markdown code fence with no wrapping commentary.
 ---
 
 # `get-session-card` Agentic Skill
@@ -78,10 +78,11 @@ Resolve it in this order, and **never** guess or fabricate a value:
 2. Call `get_share_card` with `{ linkId }`.
 3. **If the result is `{ kind: "available", markdown }`:** reply with
    **only** the `markdown` field's content, copied verbatim,
-   character-for-character. Do not add a leading sentence ("Here's your
-   share card:"), a trailing note, a wrapping code fence, or any other text
-   in that same message — the message's entire content **is** the
-   markdown, nothing else. This is a hard requirement: never rationalize
+   character-for-character, inside a fenced code block tagged `markdown`.
+   Choose a fence delimiter longer than any backtick run in the returned
+   markdown so the fence encloses the complete card. Do not add a leading
+   sentence ("Here's your share card:"), a trailing note, or any other text
+   in that same message. This is a hard requirement: never rationalize
    adding a short intro or confirmation line "just this once."
 4. **If the result is `{ kind: "unavailable" }`:** there is no card content
    to protect from added prose, so respond in plain, brief text stating
